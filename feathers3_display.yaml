@@ -5,6 +5,9 @@ esphome:
     - priority: 600      # LDO2 tændes tidligst muligt
       then:
         - output.turn_on: ldo2_enable
+    - priority: -100     # Kør script efter alle komponenter (inkl. WiFi) er initialiseret
+      then:
+        - script.execute: update_and_sleep
 
 esp32:
   board: um_feathers3
@@ -44,12 +47,33 @@ time:
     id: sntp_time
     timezone: Europe/Copenhagen
 
-# ---------- Interval: opdater display hvert 5. minut ----------
-interval:
-  - interval: 5min
+# ---------- Deep Sleep ----------
+deep_sleep:
+  id: deep_sleep_control
+  sleep_duration: 10min
+  wakeup_pin:
+    number: GPIO0
+    inverted: true
+
+# ---------- Script: vent på WiFi + data, opdater display, sov ----------
+script:
+  - id: update_and_sleep
     then:
-      - logger.log: "Interval: opdaterer display"
+      - deep_sleep.prevent: deep_sleep_control
+      - wait_until:
+          condition:
+            wifi.connected:
+          timeout: 45s
+      - logger.log: "WiFi OK – venter på HA data..."
+      - wait_until:
+          condition:
+            lambda: 'return !isnan(id(outdoor_temp).state);'
+          timeout: 30s
+      - logger.log: "Opdaterer display"
       - component.update: epaper
+      - delay: 10s        # Waveshare 4.2" bruger 4-6s på fuldt refresh
+      - output.turn_off: ldo2_enable
+      - deep_sleep.enter: deep_sleep_control
 
 # ---------- LDO2 enable (GPIO39 → 3V3_SW → display VCC) ----------
 output:
