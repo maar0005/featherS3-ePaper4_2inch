@@ -2,22 +2,21 @@ esphome:
   name: entre-display
   friendly_name: Entre Display
   on_boot:
-    priority: -100
+    priority: 600
     then:
-      # Enable 3V3_SW (LDO2) – powers the ePaper display via GPIO39
       - output.turn_on: ldo2_enable
-  on_shutdown:
-    then:
-      # Cut 3V3_SW before deep sleep so display draws zero current while sleeping
-      - output.turn_off: ldo2_enable
+      - delay: 500ms
+      - script.execute: update_and_sleep
 
 esp32:
   board: um_feathers3
+  variant: esp32s3
   framework:
     type: esp-idf
 
 logger:
   level: DEBUG
+  hardware_uart: USB_CDC
   logs:
     sensor: DEBUG
     text_sensor: DEBUG
@@ -44,11 +43,23 @@ time:
 # ---------- Deep Sleep ----------
 deep_sleep:
   id: deep_sleep_control
-  run_duration: 30s
   sleep_duration: 10min
   wakeup_pin:
-    number: GPIO0        # Boot button – manual wake for dev
+    number: GPIO0
     inverted: true
+
+# ---------- Script: opdater display, sluk strøm, sov ----------
+script:
+  - id: update_and_sleep
+    then:
+      - deep_sleep.prevent: deep_sleep_control
+      - delay: 45s          # Vent til HA har sendt sensor-data
+      - component.update: epaper
+      - delay: 5s           # Waveshare skal tegne færdig
+      - output.turn_off: ldo2_enable
+      - deep_sleep.enter:
+          id: deep_sleep_control
+          sleep_duration: 10min
 
 # ---------- LDO2 enable (GPIO39) ----------
 output:
