@@ -1,10 +1,14 @@
 # Fonts
 
-Ingen manuel download nødvendig.
+TTF-filerne er ikke i git (binære filer). Download dem én gang med:
 
-`feathers3_display.yaml` bruger ESPHome's `gfonts` platform, som automatisk
-henter **Roboto Regular** og **Roboto Bold** fra Google Fonts første gang du
-kører `esphome compile` eller `esphome run`. Filerne caches i `.esphome/`.
+```bash
+curl -fsSL "$(curl -fsSL 'https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap' | grep -o 'https://[^)]*\.ttf' | sed -n '1p')" -o fonts/Roboto-Regular.ttf
+curl -fsSL "$(curl -fsSL 'https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap' | grep -o 'https://[^)]*\.ttf' | sed -n '2p')" -o fonts/Roboto-Bold.ttf
+```
 
-Din host-maskine skal have internetadgang under kompilering — enheden selv
-tilgår aldrig internet.
+Eller via Makefile (fra projekt-roden):
+
+```bash
+make fonts
+```
