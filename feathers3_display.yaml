@@ -87,17 +87,23 @@ text_sensor:
     entity_id: alarm_control_panel.home       # Adjust to your HA entity
     internal: true
 
-# ---------- Fonts ----------
+# ---------- Fonts (auto-downloaded from Google Fonts at compile time) ----------
 font:
-  - file: "fonts/Roboto-Bold.ttf"
+  - platform: gfonts
+    family: Roboto
+    weight: 700
     id: font_large
     size: 24
-    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;-/°%!"
-  - file: "fonts/Roboto-Regular.ttf"
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆæØøÅå0123456789 .,:;-/°%!"
+  - platform: gfonts
+    family: Roboto
+    weight: 400
     id: font_medium
     size: 18
     glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆæØøÅå0123456789 .,:;-/°%!•"
-  - file: "fonts/Roboto-Regular.ttf"
+  - platform: gfonts
+    family: Roboto
+    weight: 400
     id: font_small
     size: 14
     glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆæØøÅå0123456789 .,:;-/°%!•kr/kWh"
