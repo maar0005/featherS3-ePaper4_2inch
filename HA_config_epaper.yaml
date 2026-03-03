@@ -1,10 +1,10 @@
 # ============================================================
 # Home Assistant Package: Entre Display
 # ============================================================
-# Placer denne fil i dit HA config-bibliotek, fx:
+# Placer denne fil i dit HA config-bibliotek:
 #   /config/HA_config_epaper.yaml
 #
-# Tilføj én linje i configuration.yaml:
+# Tilføj i configuration.yaml:
 #
 #   homeassistant:
 #     packages:
@@ -13,9 +13,7 @@
 # Genstart HA efter ændringer.
 # ============================================================
 
-
-# ---------- Input Text helpers (opret via UI eller her) ----------
-# Settings → Helpers → Add Helper → Text  (max length: 255)
+# ---------- Input Text helpers ----------
 input_text:
   display_event_1:
     name: "Display Event 1"
@@ -47,25 +45,30 @@ input_text:
   display_event_10:
     name: "Display Event 10"
     max: 255
+  display_vejr_note:
+    name: "Display Vejr Note"
+    max: 255
 
 
-# ---------- Automation: hent og sorter kalender-events ----------
+# ---------- Automation ----------
 automation:
-  - alias: "Opdater display kalender events"
+  - alias: "Opdater display kalender og vejr"
     description: >
-      Henter events fra 4 kalendere via calendar.get_events,
-      sorterer kronologisk (i dag øverst), fjerner 00:00 fra
-      all-day events, og gemmer de 10 næste events i input_text helpers.
+      Henter kalender-events fra 4 kalendere og timeprognoser
+      fra weather.forecast_home. Opdaterer input_text helpers
+      hvert kvarter så ESPHome kan vise dem.
     trigger:
       - platform: time_pattern
-        minutes: "/15"           # Opdater hvert kvarter
+        minutes: "/15"
       - platform: homeassistant
-        event: start             # Kør også ved HA genstart
+        event: start
     action:
+
+      # ── Kalender ──────────────────────────────────────
       - action: calendar.get_events
         data:
           duration:
-            days: 14             # Hent events de næste 14 dage
+            days: 14
         target:
           entity_id:
             - calendar.familie
@@ -90,9 +93,8 @@ automation:
                 {% elif delta == 1 %}{% set label = "I morgen" %}
                 {% elif delta == 2 %}{% set label = "Overmorgen" %}
                 {% else %}{% set label = dt.strftime('%-d. %b') %}{% endif %}
-                {% set tid = start[11:16] if not all_day else '00:00' %}
-                {% if not all_day and tid != '00:00' %}
-                  {% set label = label ~ ' ' ~ tid %}
+                {% if not all_day and start[11:16] != '00:00' %}
+                  {% set label = label ~ ' ' ~ start[11:16] %}
                 {% endif %}
                 {% set ns.events = ns.events + [{'sort': start, 'text': label ~ ': ' ~ event.summary}] %}
               {% endfor %}
@@ -107,31 +109,40 @@ automation:
                 entity_id: "input_text.display_event_{{ repeat.index }}"
               data:
                 value: >
-                  {% set ev = sorted_events | from_json %}
+                  {% set ev = sorted_events | trim | from_json %}
                   {{ ev[repeat.index - 1].text if ev | length >= repeat.index else '' }}
 
+      # ── Vejr-prognose: "Regn fra kl. 14" ─────────────
+      - action: weather.get_forecasts
+        data:
+          type: hourly
+        target:
+          entity_id: weather.forecast_home
+        response_variable: forecast_data
 
-# ---------- Template sensor: vejr på dansk ----------
-# (Alternativ til at oversætte i ESPHome-lambdaen)
-# Ikke påkrævet – ESPHome oversætter selv – men kan bruges til debug.
-#
-# template:
-#   - sensor:
-#       - name: "Vejr dansk"
-#         state: >
-#           {% set s = states('weather.forecast_home') %}
-#           {{ {
-#             'sunny': 'Sol',
-#             'clear-night': 'Klar',
-#             'partlycloudy': 'Delvis sky',
-#             'cloudy': 'Skyet',
-#             'rainy': 'Regn',
-#             'pouring': 'Kraftig regn',
-#             'snowy': 'Sne',
-#             'snowy-rainy': 'Slud',
-#             'windy': 'Blæst',
-#             'fog': 'Tåge',
-#             'hail': 'Hagl',
-#             'lightning': 'Torden',
-#             'lightning-rainy': 'Torden+regn'
-#           }.get(s, s) }}
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.display_vejr_note
+        data:
+          value: >
+            {% set forecasts = forecast_data['weather.forecast_home']['forecast'] %}
+            {% set bad = {
+              'rainy':           'Regn',
+              'pouring':         'Kraftigt regn',
+              'snowy':           'Sne',
+              'snowy-rainy':     'Slud',
+              'hail':            'Hagl',
+              'lightning':       'Torden',
+              'lightning-rainy': 'Torden og regn'
+            } %}
+            {% set current = states('weather.forecast_home') %}
+            {% set ns = namespace(note='') %}
+            {% for fc in forecasts[:12] %}
+              {% if fc.condition in bad and ns.note == '' %}
+                {% if fc.condition != current %}
+                  {% set dt = strptime(fc.datetime[:19], '%Y-%m-%dT%H:%M:%S') %}
+                  {% set ns.note = bad[fc.condition] ~ ' fra kl. ' ~ dt.strftime('%-H') %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.note }}
