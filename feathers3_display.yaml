@@ -4,8 +4,12 @@ esphome:
   on_boot:
     priority: -100
     then:
-      # Keep LDO2 on while running (powers external peripherals if any)
+      # Enable 3V3_SW (LDO2) – powers the ePaper display via GPIO39
       - output.turn_on: ldo2_enable
+  on_shutdown:
+    then:
+      # Cut 3V3_SW before deep sleep so display draws zero current while sleeping
+      - output.turn_off: ldo2_enable
 
 esp32:
   board: um_feathers3
