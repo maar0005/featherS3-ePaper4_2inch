@@ -1,11 +1,14 @@
 # ============================================================
-# Home Assistant konfiguration til Entre Display
+# Home Assistant Package: Entre Display
 # ============================================================
-# Indsæt indholdet af denne fil i din configuration.yaml
-# eller brug !include:
+# Placer denne fil i dit HA config-bibliotek, fx:
+#   /config/HA_config_epaper.yaml
 #
-#   input_text: !include_dir_merge_named includes/
-#   automation: !include automations.yaml
+# Tilføj én linje i configuration.yaml:
+#
+#   homeassistant:
+#     packages:
+#       epaper: !include HA_config_epaper.yaml
 #
 # Genstart HA efter ændringer.
 # ============================================================
