@@ -1,0 +1,241 @@
+esphome:
+  name: entre-display
+  friendly_name: Entre Display
+  on_boot:
+    priority: -100
+    then:
+      # Keep LDO2 on while running (powers external peripherals if any)
+      - output.turn_on: ldo2_enable
+
+esp32:
+  board: um_feathers3
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+  logs:
+    sensor: DEBUG
+    text_sensor: DEBUG
+    display: DEBUG
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+api:
+  password: !secret api_password
+
+# No OTA password required for local dev; add if needed
+ota:
+  - platform: esphome
+
+# ---------- Time (via HA only – no NTP) ----------
+time:
+  - platform: homeassistant
+    id: ha_time
+    timezone: Europe/Copenhagen
+
+# ---------- Deep Sleep ----------
+deep_sleep:
+  id: deep_sleep_control
+  run_duration: 30s
+  sleep_duration: 10min
+  wakeup_pin:
+    number: GPIO0        # Boot button – manual wake for dev
+    inverted: true
+
+# ---------- LDO2 enable (GPIO39) ----------
+output:
+  - platform: gpio
+    pin: GPIO39
+    id: ldo2_enable
+
+# ---------- Battery voltage ----------
+sensor:
+  - platform: adc
+    pin: GPIO2
+    id: battery_voltage
+    name: "Battery Voltage"
+    update_interval: 10s
+    attenuation: 12db
+    filters:
+      # FeatherS3 voltage divider: multiply raw ADC by 2
+      - multiply: 2.0
+    unit_of_measurement: "V"
+    accuracy_decimals: 2
+
+  # ---------- HA sensors ----------
+  - platform: homeassistant
+    id: outdoor_temp
+    entity_id: sensor.outdoor_temperature
+    internal: true
+
+  - platform: homeassistant
+    id: current_electricity_price
+    entity_id: sensor.nordpool_kwh_dk1_dkk   # Adjust to your HA sensor
+    internal: true
+
+text_sensor:
+  - platform: homeassistant
+    id: calendar_event_1
+    entity_id: calendar.google_kalender       # Adjust to your HA calendar
+    internal: true
+
+  - platform: homeassistant
+    id: alarm_status
+    entity_id: alarm_control_panel.home       # Adjust to your HA entity
+    internal: true
+
+# ---------- Fonts ----------
+font:
+  - file: "fonts/Roboto-Bold.ttf"
+    id: font_large
+    size: 24
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;-/°%!"
+  - file: "fonts/Roboto-Regular.ttf"
+    id: font_medium
+    size: 18
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆæØøÅå0123456789 .,:;-/°%!•"
+  - file: "fonts/Roboto-Regular.ttf"
+    id: font_small
+    size: 14
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆæØøÅå0123456789 .,:;-/°%!•kr/kWh"
+
+# ---------- SPI ----------
+spi:
+  clk_pin: GPIO12
+  mosi_pin: GPIO11
+
+# ---------- ePaper Display ----------
+display:
+  - platform: waveshare_epaper
+    id: epaper
+    cs_pin: GPIO10
+    dc_pin: GPIO13
+    busy_pin: GPIO15
+    reset_pin: GPIO14
+    model: 4.20in          # Try 4.20in-bV2 or 4.20in-bV3 if this fails
+    update_interval: never  # Triggered manually before deep sleep
+    rotation: 0°
+    lambda: |-
+      // ── Dimensions ──────────────────────────────────
+      const int W = 400;
+      const int H = 300;
+      const int MARGIN = 8;
+      const int COL2 = 220;  // x start of right column
+
+      // ── Background ──────────────────────────────────
+      it.fill(COLOR_ON);  // white background
+
+      // ── Row Y positions ──────────────────────────────
+      int y = MARGIN;
+
+      // ── Date + Time ──────────────────────────────────
+      auto now = id(ha_time).now();
+      if (now.is_valid()) {
+        // Weekday in Danish
+        const char* weekdays[] = {
+          "Søndag", "Mandag", "Tirsdag", "Onsdag",
+          "Torsdag", "Fredag", "Lørdag"
+        };
+        const char* months[] = {
+          "", "januar", "februar", "marts", "april", "maj",
+          "juni", "juli", "august", "september", "oktober",
+          "november", "december"
+        };
+        char date_str[40];
+        snprintf(date_str, sizeof(date_str), "%s %d. %s %d",
+          weekdays[now.day_of_week], now.day_of_month,
+          months[now.month], now.year);
+        it.print(MARGIN, y, id(font_large), COLOR_OFF, date_str);
+
+        char time_str[10];
+        snprintf(time_str, sizeof(time_str), "%02d:%02d", now.hour, now.minute);
+        it.print(W - MARGIN, y, id(font_large), COLOR_OFF,
+                 TextAlign::TOP_RIGHT, time_str);
+      } else {
+        it.print(MARGIN, y, id(font_large), COLOR_OFF, "Ingen tid endnu");
+      }
+
+      y += 32;
+      it.line(MARGIN, y, W - MARGIN, y, COLOR_OFF);
+      y += 8;
+
+      // ── Outdoor temperature ───────────────────────────
+      it.print(MARGIN, y, id(font_medium), COLOR_OFF, "Ude:");
+      if (!isnan(id(outdoor_temp).state)) {
+        char temp_str[16];
+        snprintf(temp_str, sizeof(temp_str), "%.1f°C",
+                 id(outdoor_temp).state);
+        it.print(80, y, id(font_medium), COLOR_OFF, temp_str);
+      } else {
+        it.print(80, y, id(font_medium), COLOR_OFF, "–");
+      }
+
+      // Battery voltage – right aligned on same row
+      char batt_str[16];
+      snprintf(batt_str, sizeof(batt_str), "%.2fV",
+               id(battery_voltage).state);
+      it.print(W - MARGIN, y, id(font_small), COLOR_OFF,
+               TextAlign::TOP_RIGHT, batt_str);
+
+      y += 28;
+      it.line(MARGIN, y, W - MARGIN, y, COLOR_OFF);
+      y += 8;
+
+      // ── Calendar ─────────────────────────────────────
+      it.print(MARGIN, y, id(font_medium), COLOR_OFF, "KALENDER");
+      y += 24;
+
+      std::string cal = id(calendar_event_1).state;
+      if (cal.empty() || cal == "unavailable" || cal == "unknown") {
+        it.print(MARGIN, y, id(font_small), COLOR_OFF, "Ingen events i dag");
+        y += 20;
+      } else {
+        // HA calendar entity state is the next event summary.
+        // Display up to ~2 lines (truncate at 45 chars each)
+        char line1[48];
+        snprintf(line1, sizeof(line1), "• %.45s", cal.c_str());
+        it.print(MARGIN, y, id(font_small), COLOR_OFF, line1);
+        y += 20;
+      }
+
+      y += 4;
+      it.line(MARGIN, y, W - MARGIN, y, COLOR_OFF);
+      y += 8;
+
+      // ── Electricity price ─────────────────────────────
+      it.print(MARGIN, y, id(font_medium), COLOR_OFF, "STRØM");
+      y += 24;
+
+      if (!isnan(id(current_electricity_price).state)) {
+        char price_str[32];
+        snprintf(price_str, sizeof(price_str), "Nu: %.2f kr/kWh",
+                 id(current_electricity_price).state);
+        it.print(MARGIN, y, id(font_small), COLOR_OFF, price_str);
+      } else {
+        it.print(MARGIN, y, id(font_small), COLOR_OFF, "Pris utilgængelig");
+      }
+      y += 20;
+
+      y += 4;
+      it.line(MARGIN, y, W - MARGIN, y, COLOR_OFF);
+      y += 8;
+
+      // ── HA Statuses ───────────────────────────────────
+      std::string alarm = id(alarm_status).state;
+      char alarm_str[32];
+      if (alarm == "armed_away" || alarm == "armed_home") {
+        snprintf(alarm_str, sizeof(alarm_str), "Alarm: ARMET");
+      } else if (alarm == "disarmed") {
+        snprintf(alarm_str, sizeof(alarm_str), "Alarm: FRA");
+      } else if (alarm.empty() || alarm == "unavailable") {
+        snprintf(alarm_str, sizeof(alarm_str), "Alarm: ?");
+      } else {
+        snprintf(alarm_str, sizeof(alarm_str), "Alarm: %.12s", alarm.c_str());
+      }
+      it.print(MARGIN, y, id(font_small), COLOR_OFF, alarm_str);
+
+      // ── Border ───────────────────────────────────────
+      it.rectangle(0, 0, W, H, COLOR_OFF);
