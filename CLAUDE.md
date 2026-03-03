@@ -20,9 +20,9 @@ ESPHome firmware for an **Unexpected Maker FeatherS3** (ESP32-S3, 16MB flash, 8M
 | MOSI   | 11   |
 | SCK    | 12   |
 | CS     | 10   |
-| DC     | 13   |
+| DC     | 5    |
 | RST    | 14   |
-| BUSY   | 15   |
+| BUSY   | 6    |
 
 ### Special FeatherS3 pins
 - `GPIO2` — battery voltage sensing (VBAT)
