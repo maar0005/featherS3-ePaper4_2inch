@@ -1,0 +1,134 @@
+# ============================================================
+# Home Assistant konfiguration til Entre Display
+# ============================================================
+# Indsæt indholdet af denne fil i din configuration.yaml
+# eller brug !include:
+#
+#   input_text: !include_dir_merge_named includes/
+#   automation: !include automations.yaml
+#
+# Genstart HA efter ændringer.
+# ============================================================
+
+
+# ---------- Input Text helpers (opret via UI eller her) ----------
+# Settings → Helpers → Add Helper → Text  (max length: 255)
+input_text:
+  display_event_1:
+    name: "Display Event 1"
+    max: 255
+  display_event_2:
+    name: "Display Event 2"
+    max: 255
+  display_event_3:
+    name: "Display Event 3"
+    max: 255
+  display_event_4:
+    name: "Display Event 4"
+    max: 255
+  display_event_5:
+    name: "Display Event 5"
+    max: 255
+  display_event_6:
+    name: "Display Event 6"
+    max: 255
+  display_event_7:
+    name: "Display Event 7"
+    max: 255
+  display_event_8:
+    name: "Display Event 8"
+    max: 255
+  display_event_9:
+    name: "Display Event 9"
+    max: 255
+  display_event_10:
+    name: "Display Event 10"
+    max: 255
+
+
+# ---------- Automation: hent og sorter kalender-events ----------
+automation:
+  - alias: "Opdater display kalender events"
+    description: >
+      Henter events fra 4 kalendere via calendar.get_events,
+      sorterer kronologisk (i dag øverst), fjerner 00:00 fra
+      all-day events, og gemmer de 10 næste events i input_text helpers.
+    trigger:
+      - platform: time_pattern
+        minutes: "/15"           # Opdater hvert kvarter
+      - platform: homeassistant
+        event: start             # Kør også ved HA genstart
+    action:
+      - action: calendar.get_events
+        data:
+          duration:
+            days: 14             # Hent events de næste 14 dage
+        target:
+          entity_id:
+            - calendar.familie
+            - calendar.maar0005_gmail_com
+            - calendar.sabinelerke_gmail_com
+            - calendar.aula_jeppe_lerke_kamstrup_aarskalender
+        response_variable: cal_events
+
+      - variables:
+          sorted_events: >
+            {% set ns = namespace(events=[]) %}
+            {% for cal_id, cal_data in cal_events.items() %}
+              {% for event in cal_data.events %}
+                {% set start = event.start %}
+                {% set all_day = start | length == 10 %}
+                {% set date_str = start[:10] %}
+                {% set dt = strptime(date_str, '%Y-%m-%d').date() %}
+                {% set today = now().date() %}
+                {% set delta = (dt - today).days %}
+                {% if delta < 0 %}{% continue %}{% endif %}
+                {% if delta == 0 %}{% set label = "I dag" %}
+                {% elif delta == 1 %}{% set label = "I morgen" %}
+                {% elif delta == 2 %}{% set label = "Overmorgen" %}
+                {% else %}{% set label = dt.strftime('%-d. %b') %}{% endif %}
+                {% set tid = start[11:16] if not all_day else '00:00' %}
+                {% if not all_day and tid != '00:00' %}
+                  {% set label = label ~ ' ' ~ tid %}
+                {% endif %}
+                {% set ns.events = ns.events + [{'sort': start, 'text': label ~ ': ' ~ event.summary}] %}
+              {% endfor %}
+            {% endfor %}
+            {{ (ns.events | sort(attribute='sort'))[:10] | to_json }}
+
+      - repeat:
+          count: 10
+          sequence:
+            - action: input_text.set_value
+              target:
+                entity_id: "input_text.display_event_{{ repeat.index }}"
+              data:
+                value: >
+                  {% set ev = sorted_events | from_json %}
+                  {{ ev[repeat.index - 1].text if ev | length >= repeat.index else '' }}
+
+
+# ---------- Template sensor: vejr på dansk ----------
+# (Alternativ til at oversætte i ESPHome-lambdaen)
+# Ikke påkrævet – ESPHome oversætter selv – men kan bruges til debug.
+#
+# template:
+#   - sensor:
+#       - name: "Vejr dansk"
+#         state: >
+#           {% set s = states('weather.forecast_home') %}
+#           {{ {
+#             'sunny': 'Sol',
+#             'clear-night': 'Klar',
+#             'partlycloudy': 'Delvis sky',
+#             'cloudy': 'Skyet',
+#             'rainy': 'Regn',
+#             'pouring': 'Kraftig regn',
+#             'snowy': 'Sne',
+#             'snowy-rainy': 'Slud',
+#             'windy': 'Blæst',
+#             'fog': 'Tåge',
+#             'hail': 'Hagl',
+#             'lightning': 'Torden',
+#             'lightning-rainy': 'Torden+regn'
+#           }.get(s, s) }}
