@@ -154,6 +154,12 @@ text_sensor:
     entity_id: input_text.display_event_10
     internal: true
 
+  # Vejr-note fra HA forecast ("Regn fra kl. 14")
+  - platform: homeassistant
+    id: vejr_note
+    entity_id: input_text.display_vejr_note
+    internal: true
+
   # Alarm
   - platform: homeassistant
     id: alarm_status
@@ -229,36 +235,52 @@ display:
       y += 6;
 
       // ── Vejr + temperaturer ───────────────────────────
-      // Vejr-tilstand → dansk tekst
       std::string ws = id(weather_state).state;
-      const char* vejr = ws.empty() || ws == "unavailable" ? "?" :
-        ws == "sunny"            ? "Sol" :
-        ws == "clear-night"      ? "Klar" :
-        ws == "partlycloudy"     ? "Delvis sky" :
-        ws == "cloudy"           ? "Skyet" :
-        ws == "rainy"            ? "Regn" :
-        ws == "pouring"          ? "Kraftig regn" :
-        ws == "snowy"            ? "Sne" :
+      const char* vejr =
+        ws == "sunny"            ? "Solskin" :
+        ws == "clear-night"      ? "Klar nat" :
+        ws == "partlycloudy"     ? "Lidt skyer" :
+        ws == "cloudy"           ? "Overskyet" :
+        ws == "rainy"            ? "Regnvejr" :
+        ws == "pouring"          ? "Kraftigt regn" :
+        ws == "snowy"            ? "Snevejr" :
         ws == "snowy-rainy"      ? "Slud" :
-        ws == "windy"            ? "Blæst" :
-        ws == "windy-variant"    ? "Blæst" :
-        ws == "fog"              ? "Tåge" :
-        ws == "hail"             ? "Hagl" :
-        ws == "lightning"        ? "Torden" :
-        ws == "lightning-rainy"  ? "Torden+regn" : ws.c_str();
+        ws == "windy"            ? "Blæsevejr" :
+        ws == "windy-variant"    ? "Blæsevejr" :
+        ws == "fog"              ? "Tåget" :
+        ws == "hail"             ? "Haglvejr" :
+        ws == "lightning"        ? "Tordenvejr" :
+        ws == "lightning-rainy"  ? "Torden og regn" :
+        ws == "exceptional"      ? "Usædvanligt" : "?";
 
-      it.print(M, y, id(font_medium), FG, vejr);
-
-      // Ude + inde temp højrejusteret
-      char temps[32];
       float ude  = id(outdoor_temp).state;
       float inde = id(indoor_temp).state;
-      snprintf(temps, sizeof(temps), "Ude %.1f°  Inde %.1f°",
-        isnan(ude)  ? 0.0f : ude,
-        isnan(inde) ? 0.0f : inde);
-      it.print(W - M, y, id(font_medium), FG, TextAlign::TOP_RIGHT, temps);
 
-      y += 28;
+      // Vejr + udetemperatur på én linje
+      char vejr_linje[48];
+      if (!isnan(ude))
+        snprintf(vejr_linje, sizeof(vejr_linje), "%s, %.1f°", vejr, ude);
+      else
+        snprintf(vejr_linje, sizeof(vejr_linje), "%s", vejr);
+      it.print(M, y, id(font_medium), FG, vejr_linje);
+
+      // Indendørs temp højrejusteret (skjul hvis 0 eller unavailable)
+      if (!isnan(inde) && inde != 0.0f) {
+        char inde_str[16];
+        snprintf(inde_str, sizeof(inde_str), "Inde %.1f°", inde);
+        it.print(W - M, y, id(font_medium), FG, TextAlign::TOP_RIGHT, inde_str);
+      }
+
+      y += 24;
+
+      // Vejr-note fra HA forecast ("Regn fra kl. 14")
+      std::string vnote = id(vejr_note).state;
+      if (!vnote.empty() && vnote != "unavailable" && vnote != "unknown") {
+        it.print(M, y, id(font_small), FG, vnote.c_str());
+        y += 18;
+      }
+
+      y += 4;
       it.line(M, y, W - M, y, FG);
       y += 6;
 
