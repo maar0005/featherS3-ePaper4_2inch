@@ -84,7 +84,7 @@ script:
             - logger.log: "WiFi OK – henter data fra HA REST API..."
             - http_request.post:
                 url: !secret ha_template_url
-                headers:
+                request_headers:
                   Authorization: !secret ha_authorization
                   Content-Type: "application/json"
                 # Body: JSON payload med én Jinja2-template der returnerer alle
