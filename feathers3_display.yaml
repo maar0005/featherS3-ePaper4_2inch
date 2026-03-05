@@ -34,12 +34,25 @@ wifi:
   on_disconnect:
     - logger.log: "WiFi mistet forbindelsen"
 
+# api: bevares til OTA-opdateringer og tidssynkronisering (time: homeassistant kræver native API)
 api:
   encryption:
     key: !secret api_encryption_key
 
 ota:
   - platform: esphome
+
+# ---------- HTTP Request (pull-model) ----------
+# Tilføj følgende til secrets.yaml:
+#   ha_template_url: "http://192.168.x.x:8123/api/template"
+#   ha_authorization: "Bearer DIT_LONG_LIVED_TOKEN_HER"
+http_request:
+  id: http_client
+  timeout: 10s
+  verify_ssl: false
+
+# ---------- JSON parsing ----------
+json:
 
 # ---------- Tid via Home Assistant ----------
 time:
@@ -55,7 +68,7 @@ deep_sleep:
     number: GPIO0
     inverted: true
 
-# ---------- Script: vent på WiFi + data, opdater display, sov ----------
+# ---------- Script: vent på WiFi, pull data via REST, opdater display, sov ----------
 script:
   - id: update_and_sleep
     then:
@@ -63,12 +76,63 @@ script:
       - wait_until:
           condition:
             wifi.connected:
-          timeout: 45s
-      - logger.log: "WiFi OK – venter på HA data..."
-      - wait_until:
+          timeout: 15s
+      - if:
           condition:
-            lambda: 'return !isnan(id(outdoor_temp).state);'
-          timeout: 30s
+            wifi.connected:
+          then:
+            - logger.log: "WiFi OK – henter data fra HA REST API..."
+            - http_request.post:
+                url: !secret ha_template_url
+                request_headers:
+                  Authorization: !secret ha_authorization
+                  Content-Type: "application/json"
+                # Body: JSON payload med én Jinja2-template der returnerer alle
+                # nødvendige sensorværdier som ét JSON-objekt via tojson-filteret.
+                # float(none) → null i JSON hvis sensoren er unavailable.
+                body: !lambda |-
+                  return R"json({"template":"{% set d={'outdoor_temp':states('sensor.dantherm_outdoor_temperature')|float(none),'indoor_temp':states('sensor.dantherm_extract_temperature')|float(none),'weather_state':states('weather.forecast_home'),'vejr_note':states('input_text.display_vejr_note'),'alarm_status':states('alarm_control_panel.home'),'cal_event_1':states('input_text.display_event_1'),'cal_event_2':states('input_text.display_event_2'),'cal_event_3':states('input_text.display_event_3'),'cal_event_4':states('input_text.display_event_4'),'cal_event_5':states('input_text.display_event_5'),'cal_event_6':states('input_text.display_event_6'),'cal_event_7':states('input_text.display_event_7'),'cal_event_8':states('input_text.display_event_8'),'cal_event_9':states('input_text.display_event_9'),'cal_event_10':states('input_text.display_event_10')} %}{{d|tojson}}"})json";
+                on_response:
+                  then:
+                    - lambda: |-
+                        if (response->status_code != 200) {
+                          ESP_LOGW("ha_pull", "HTTP fejl fra HA: status %d", response->status_code);
+                          return;
+                        }
+                        // id(http_client).get_string() returnerer svarbody fra seneste HTTP-kald.
+                        // Alternativ for ældre ESPHome (< 2024.6): brug response->body i stedet.
+                        bool ok = json::parse_json(id(http_client).get_string(), [](JsonObject root) {
+                          // ── Numeriske sensorer ─────────────────────────────────────────
+                          // isNull()-tjek sikrer at vi publicerer NAN (initial state) ved
+                          // unavailable sensorer frem for 0.0.
+                          if (!root["outdoor_temp"].isNull())
+                            id(outdoor_temp).publish_state(root["outdoor_temp"].as<float>());
+                          if (!root["indoor_temp"].isNull())
+                            id(indoor_temp).publish_state(root["indoor_temp"].as<float>());
+
+                          // ── Vejr ───────────────────────────────────────────────────────
+                          id(weather_state).publish_state(root["weather_state"] | "unknown");
+                          id(vejr_note).publish_state(root["vejr_note"] | "");
+
+                          // ── Alarm ──────────────────────────────────────────────────────
+                          id(alarm_status).publish_state(root["alarm_status"] | "unknown");
+
+                          // ── Kalender-events ────────────────────────────────────────────
+                          id(cal_event_1).publish_state(root["cal_event_1"] | "");
+                          id(cal_event_2).publish_state(root["cal_event_2"] | "");
+                          id(cal_event_3).publish_state(root["cal_event_3"] | "");
+                          id(cal_event_4).publish_state(root["cal_event_4"] | "");
+                          id(cal_event_5).publish_state(root["cal_event_5"] | "");
+                          id(cal_event_6).publish_state(root["cal_event_6"] | "");
+                          id(cal_event_7).publish_state(root["cal_event_7"] | "");
+                          id(cal_event_8).publish_state(root["cal_event_8"] | "");
+                          id(cal_event_9).publish_state(root["cal_event_9"] | "");
+                          id(cal_event_10).publish_state(root["cal_event_10"] | "");
+                        });
+                        if (!ok)
+                          ESP_LOGW("ha_pull", "JSON parse fejl – viser tomt display");
+          else:
+            - logger.log: "WiFi timeout – kører display-opdatering uden friske data"
       - logger.log: "Opdaterer display"
       - component.update: epaper
       - delay: 10s        # Waveshare 4.2" bruger 4-6s på fuldt refresh
@@ -94,77 +158,118 @@ sensor:
     unit_of_measurement: "V"
     accuracy_decimals: 2
 
-  - platform: homeassistant
+  # Udfyldes via publish_state() i HTTP on_response-lambdaen ovenfor.
+  # Initial state er NAN så display-koden kan skelne "ingen data" fra "0.0°C".
+  - platform: template
     id: outdoor_temp
-    entity_id: sensor.dantherm_outdoor_temperature
+    name: "Outdoor Temperature"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
     internal: true
+    lambda: 'return NAN;'
+    update_interval: never
 
-  - platform: homeassistant
+  - platform: template
     id: indoor_temp
-    entity_id: sensor.dantherm_extract_temperature
+    name: "Indoor Temperature"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
     internal: true
+    lambda: 'return NAN;'
+    update_interval: never
 
-# ---------- Text sensors ----------
+# ---------- Text sensors (udfyldes via publish_state() i HTTP on_response-lambdaen) ----------
 text_sensor:
-  # Vejr
-  - platform: homeassistant
+  - platform: template
     id: weather_state
-    entity_id: weather.forecast_home
+    name: "Weather State"
     internal: true
+    lambda: 'return {"unavailable"};'
+    update_interval: never
 
-  # Kalender-events – præformateret og sorteret fra HA automation
-  - platform: homeassistant
+  - platform: template
     id: cal_event_1
-    entity_id: input_text.display_event_1
+    name: "Calendar Event 1"
     internal: true
-  - platform: homeassistant
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
     id: cal_event_2
-    entity_id: input_text.display_event_2
+    name: "Calendar Event 2"
     internal: true
-  - platform: homeassistant
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
     id: cal_event_3
-    entity_id: input_text.display_event_3
+    name: "Calendar Event 3"
     internal: true
-  - platform: homeassistant
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
     id: cal_event_4
-    entity_id: input_text.display_event_4
+    name: "Calendar Event 4"
     internal: true
-  - platform: homeassistant
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
     id: cal_event_5
-    entity_id: input_text.display_event_5
+    name: "Calendar Event 5"
     internal: true
-  - platform: homeassistant
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
     id: cal_event_6
-    entity_id: input_text.display_event_6
+    name: "Calendar Event 6"
     internal: true
-  - platform: homeassistant
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
     id: cal_event_7
-    entity_id: input_text.display_event_7
+    name: "Calendar Event 7"
     internal: true
-  - platform: homeassistant
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
     id: cal_event_8
-    entity_id: input_text.display_event_8
+    name: "Calendar Event 8"
     internal: true
-  - platform: homeassistant
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
     id: cal_event_9
-    entity_id: input_text.display_event_9
+    name: "Calendar Event 9"
     internal: true
-  - platform: homeassistant
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
     id: cal_event_10
-    entity_id: input_text.display_event_10
+    name: "Calendar Event 10"
     internal: true
+    lambda: 'return {""};'
+    update_interval: never
 
-  # Vejr-note fra HA forecast ("Regn fra kl. 14")
-  - platform: homeassistant
+  - platform: template
     id: vejr_note
-    entity_id: input_text.display_vejr_note
+    name: "Vejr Note"
     internal: true
+    lambda: 'return {""};'
+    update_interval: never
 
-  # Alarm
-  - platform: homeassistant
+  - platform: template
     id: alarm_status
-    entity_id: alarm_control_panel.home
+    name: "Alarm Status"
     internal: true
+    lambda: 'return {"unknown"};'
+    update_interval: never
 
 # ---------- Fonts ----------
 font:
