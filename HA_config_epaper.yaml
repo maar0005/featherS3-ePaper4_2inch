@@ -1,21 +1,128 @@
 # ============================================================
-# Home Assistant Package: Entre Display
+# Home Assistant Package: ePaper Display
 # ============================================================
-# Placer denne fil i dit HA config-bibliotek:
+# Copy this file to your HA config directory:
 #   /config/HA_config_epaper.yaml
 #
-# Tilføj i configuration.yaml:
+# Add to configuration.yaml:
 #
 #   homeassistant:
 #     packages:
 #       epaper: !include HA_config_epaper.yaml
 #
-# Genstart HA efter ændringer.
+# Restart HA after changes.
 # ============================================================
 
-# ---------- Input Text helpers ----------
+
+# ============================================================
+# LANGUAGE  –  edit only this section to change language
+# ============================================================
+template:
+  - sensor:
+      - name: "display_lang"
+        state: "ok"
+        attributes:
+          # Weekdays (0=Sunday … 6=Saturday)
+          weekdays:
+            - "Søndag"
+            - "Mandag"
+            - "Tirsdag"
+            - "Onsdag"
+            - "Torsdag"
+            - "Fredag"
+            - "Lørdag"
+          # Months (index 1–12, leave index 0 empty)
+          months:
+            - ""
+            - "jan"
+            - "feb"
+            - "mar"
+            - "apr"
+            - "maj"
+            - "jun"
+            - "jul"
+            - "aug"
+            - "sep"
+            - "okt"
+            - "nov"
+            - "dec"
+          # Weather conditions
+          weather_map:
+            sunny:           "Solskin"
+            clear-night:     "Klar nat"
+            partlycloudy:    "Lidt skyer"
+            cloudy:          "Overskyet"
+            rainy:           "Regnvejr"
+            pouring:         "Kraftigt regn"
+            snowy:           "Snevejr"
+            snowy-rainy:     "Slud"
+            windy:           "Blæsevejr"
+            windy-variant:   "Blæsevejr"
+            fog:             "Tåget"
+            hail:            "Haglvejr"
+            lightning:       "Tordenvejr"
+            lightning-rainy: "Torden og regn"
+            exceptional:     "Usædvanligt"
+          # Bad weather conditions used in forecast note
+          forecast_bad:
+            rainy:           "Regn"
+            pouring:         "Kraftigt regn"
+            snowy:           "Sne"
+            snowy-rainy:     "Slud"
+            hail:            "Hagl"
+            lightning:       "Torden"
+            lightning-rainy: "Torden og regn"
+          forecast_from:     "fra kl."
+          # Alarm states
+          alarm_map:
+            armed_away: "Alarm: ARMET"
+            armed_home: "Alarm: ARMET"
+            disarmed:   "Alarm: FRA"
+            triggered:  "Alarm: UDLØST"
+          # Labels
+          indoor_prefix:  "Inde"
+          cal_header:     "KALENDER"
+          no_events:      "Ingen kommende events"
+          today:          "I dag"
+          tomorrow:       "I morgen"
+          day_after:      "Overmorgen"
+          # forecast_from: word between bad-weather label and hour, e.g. "Rain from 14"
+
+# ============================================================
+# TEMPLATE SENSORS – no need to edit below this line
+# ============================================================
+      - name: "display_date_str"
+        state: >
+          {% set wd = state_attr('sensor.display_lang', 'weekdays') %}
+          {% set mo = state_attr('sensor.display_lang', 'months') %}
+          {% set n = now() %}
+          {{ wd[n.strftime('%w')|int] }} {{ n.day }}. {{ mo[n.month] }} {{ n.year }}
+
+      - name: "display_time_str"
+        state: "{{ now().strftime('%H:%M') }}"
+
+      - name: "display_weather_str"
+        state: >
+          {% set ws = states('weather.forecast_home') %}
+          {% set map = state_attr('sensor.display_lang', 'weather_map') %}
+          {% set vejr = map.get(ws, ws) %}
+          {% set ude = states('sensor.dantherm_outdoor_temperature')|float(none) %}
+          {{ vejr }}{% if ude is not none %}, {{ ude|round(1) }}°{% endif %}
+
+      - name: "display_indoor_str"
+        state: >
+          {% set inde = states('sensor.dantherm_extract_temperature')|float(none) %}
+          {% set prefix = state_attr('sensor.display_lang', 'indoor_prefix') %}
+          {% if inde is not none and inde != 0 %}{{ prefix }} {{ inde|round(1) }}°{% endif %}
+
+      - name: "display_alarm_str"
+        state: >
+          {% set alarm = states('alarm_control_panel.home') %}
+          {% set map = state_attr('sensor.display_lang', 'alarm_map') %}
+          {{ map.get(alarm, '?') }}
+
+# ---------- Input text helpers (filled by automation below) ----------
 input_text:
-  # ── Kalender events (udfyldes af automation nedenfor) ──
   display_event_1:
     name: "Display Event 1"
     max: 255
@@ -47,87 +154,18 @@ input_text:
     name: "Display Event 10"
     max: 255
   display_vejr_note:
-    name: "Display Vejr Note"
+    name: "Display Weather Note"
     max: 255
-
-  # ── Brugertilpassede labels (rediger her for at skifte sprog) ──
-  display_cal_header:
-    name: "Display: Kalender overskrift"
-    initial: "KALENDER"
-    max: 32
-  display_no_events_msg:
-    name: "Display: Ingen events tekst"
-    initial: "Ingen kommende events"
-    max: 64
-
-# ---------- Template sensorer (sprog og formatering styres her) ----------
-# Rediger disse for at skifte sprog, format eller datakilder.
-template:
-  - sensor:
-      # Dato – rediger ugedags- og månedsnavne for andet sprog
-      - name: "display_date_str"
-        state: >
-          {% set wd = ['Søndag','Mandag','Tirsdag','Onsdag','Torsdag','Fredag','Lørdag'] %}
-          {% set mo = ['','jan','feb','mar','apr','maj','jun','jul','aug','sep','okt','nov','dec'] %}
-          {% set n = now() %}
-          {{ wd[n.strftime('%w')|int] }} {{ n.day }}. {{ mo[n.month] }} {{ n.year }}
-
-      # Tid
-      - name: "display_time_str"
-        state: "{{ now().strftime('%H:%M') }}"
-
-      # Vejr + udetemperatur
-      - name: "display_weather_str"
-        state: >
-          {% set ws = states('weather.forecast_home') %}
-          {% set map = {
-            'sunny':           'Solskin',
-            'clear-night':     'Klar nat',
-            'partlycloudy':    'Lidt skyer',
-            'cloudy':          'Overskyet',
-            'rainy':           'Regnvejr',
-            'pouring':         'Kraftigt regn',
-            'snowy':           'Snevejr',
-            'snowy-rainy':     'Slud',
-            'windy':           'Blæsevejr',
-            'windy-variant':   'Blæsevejr',
-            'fog':             'Tåget',
-            'hail':            'Haglvejr',
-            'lightning':       'Tordenvejr',
-            'lightning-rainy': 'Torden og regn',
-            'exceptional':     'Usædvanligt'
-          } %}
-          {% set vejr = map.get(ws, ws) %}
-          {% set ude = states('sensor.dantherm_outdoor_temperature')|float(none) %}
-          {{ vejr }}{% if ude is not none %}, {{ ude|round(1) }}°{% endif %}
-
-      # Indendørs temperatur (vises højrejusteret – tom streng skjuler den)
-      - name: "display_indoor_str"
-        state: >
-          {% set inde = states('sensor.dantherm_extract_temperature')|float(none) %}
-          {% if inde is not none and inde != 0 %}Inde {{ inde|round(1) }}°{% else %}{% endif %}
-
-      # Alarm status
-      - name: "display_alarm_str"
-        state: >
-          {% set alarm = states('alarm_control_panel.home') %}
-          {% set map = {
-            'armed_away': 'Alarm: ARMET',
-            'armed_home': 'Alarm: ARMET',
-            'disarmed':   'Alarm: FRA',
-            'triggered':  'Alarm: UDLØST'
-          } %}
-          {{ map.get(alarm, 'Alarm: ?') }}
 
 
 # ---------- Automation ----------
 automation:
   - id: epaper_opdater_kalender_og_vejr
-    alias: "Opdater display kalender og vejr"
+    alias: "Update display calendar and weather"
     description: >
-      Henter kalender-events fra 4 kalendere og timeprognoser
-      fra weather.forecast_home. Opdaterer input_text helpers
-      hvert kvarter så ESPHome kan vise dem.
+      Fetches calendar events from 4 calendars and hourly forecasts
+      from weather.forecast_home. Updates input_text helpers every
+      15 minutes so ESPHome can display them.
     trigger:
       - platform: time_pattern
         minutes: "/15"
@@ -150,6 +188,10 @@ automation:
 
       - variables:
           sorted_events: >
+            {% set lang = state_attr('sensor.display_lang', 'today') %}
+            {% set lbl_today    = state_attr('sensor.display_lang', 'today') %}
+            {% set lbl_tomorrow = state_attr('sensor.display_lang', 'tomorrow') %}
+            {% set lbl_dayafter = state_attr('sensor.display_lang', 'day_after') %}
             {% set ns = namespace(events=[]) %}
             {% for cal_id, cal_data in cal_events.items() %}
               {% for event in cal_data.events %}
@@ -160,9 +202,9 @@ automation:
                 {% set today = now().date() %}
                 {% set delta = (dt - today).days %}
                 {% if delta < 0 %}{% continue %}{% endif %}
-                {% if delta == 0 %}{% set label = "I dag" %}
-                {% elif delta == 1 %}{% set label = "I morgen" %}
-                {% elif delta == 2 %}{% set label = "Overmorgen" %}
+                {% if delta == 0 %}{% set label = lbl_today %}
+                {% elif delta == 1 %}{% set label = lbl_tomorrow %}
+                {% elif delta == 2 %}{% set label = lbl_dayafter %}
                 {% else %}{% set label = dt.strftime('%-d. %b') %}{% endif %}
                 {% if not all_day and start[11:16] != '00:00' %}
                   {% set label = label ~ ' ' ~ start[11:16] %}
@@ -197,22 +239,15 @@ automation:
         data:
           value: >
             {% set forecasts = forecast_data['weather.forecast_home']['forecast'] %}
-            {% set bad = {
-              'rainy':           'Regn',
-              'pouring':         'Kraftigt regn',
-              'snowy':           'Sne',
-              'snowy-rainy':     'Slud',
-              'hail':            'Hagl',
-              'lightning':       'Torden',
-              'lightning-rainy': 'Torden og regn'
-            } %}
+            {% set bad = state_attr('sensor.display_lang', 'forecast_bad') %}
+            {% set from_str = state_attr('sensor.display_lang', 'forecast_from') %}
             {% set current = states('weather.forecast_home') %}
             {% set ns = namespace(note='') %}
             {% for fc in forecasts[:12] %}
               {% if fc.condition in bad and ns.note == '' %}
                 {% if fc.condition != current %}
                   {% set dt = strptime(fc.datetime[:19], '%Y-%m-%dT%H:%M:%S') %}
-                  {% set ns.note = bad[fc.condition] ~ ' fra kl. ' ~ dt.strftime('%-H') %}
+                  {% set ns.note = bad[fc.condition] ~ ' ' ~ from_str ~ ' ' ~ dt.strftime('%-H') %}
                 {% endif %}
               {% endif %}
             {% endfor %}
