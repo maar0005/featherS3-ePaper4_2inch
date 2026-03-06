@@ -15,6 +15,7 @@
 
 # ---------- Input Text helpers ----------
 input_text:
+  # ── Kalender events (udfyldes af automation nedenfor) ──
   display_event_1:
     name: "Display Event 1"
     max: 255
@@ -48,6 +49,75 @@ input_text:
   display_vejr_note:
     name: "Display Vejr Note"
     max: 255
+
+  # ── Brugertilpassede labels (rediger her for at skifte sprog) ──
+  display_cal_header:
+    name: "Display: Kalender overskrift"
+    initial: "KALENDER"
+    max: 32
+  display_no_events_msg:
+    name: "Display: Ingen events tekst"
+    initial: "Ingen kommende events"
+    max: 64
+
+# ---------- Template sensorer (sprog og formatering styres her) ----------
+# Rediger disse for at skifte sprog, format eller datakilder.
+template:
+  - sensor:
+      # Dato – rediger ugedags- og månedsnavne for andet sprog
+      - name: "display_date_str"
+        state: >
+          {% set wd = ['Søndag','Mandag','Tirsdag','Onsdag','Torsdag','Fredag','Lørdag'] %}
+          {% set mo = ['','jan','feb','mar','apr','maj','jun','jul','aug','sep','okt','nov','dec'] %}
+          {% set n = now() %}
+          {{ wd[n.strftime('%w')|int] }} {{ n.day }}. {{ mo[n.month] }} {{ n.year }}
+
+      # Tid
+      - name: "display_time_str"
+        state: "{{ now().strftime('%H:%M') }}"
+
+      # Vejr + udetemperatur
+      - name: "display_weather_str"
+        state: >
+          {% set ws = states('weather.forecast_home') %}
+          {% set map = {
+            'sunny':           'Solskin',
+            'clear-night':     'Klar nat',
+            'partlycloudy':    'Lidt skyer',
+            'cloudy':          'Overskyet',
+            'rainy':           'Regnvejr',
+            'pouring':         'Kraftigt regn',
+            'snowy':           'Snevejr',
+            'snowy-rainy':     'Slud',
+            'windy':           'Blæsevejr',
+            'windy-variant':   'Blæsevejr',
+            'fog':             'Tåget',
+            'hail':            'Haglvejr',
+            'lightning':       'Tordenvejr',
+            'lightning-rainy': 'Torden og regn',
+            'exceptional':     'Usædvanligt'
+          } %}
+          {% set vejr = map.get(ws, ws) %}
+          {% set ude = states('sensor.dantherm_outdoor_temperature')|float(none) %}
+          {{ vejr }}{% if ude is not none %}, {{ ude|round(1) }}°{% endif %}
+
+      # Indendørs temperatur (vises højrejusteret – tom streng skjuler den)
+      - name: "display_indoor_str"
+        state: >
+          {% set inde = states('sensor.dantherm_extract_temperature')|float(none) %}
+          {% if inde is not none and inde != 0 %}Inde {{ inde|round(1) }}°{% else %}{% endif %}
+
+      # Alarm status
+      - name: "display_alarm_str"
+        state: >
+          {% set alarm = states('alarm_control_panel.home') %}
+          {% set map = {
+            'armed_away': 'Alarm: ARMET',
+            'armed_home': 'Alarm: ARMET',
+            'disarmed':   'Alarm: FRA',
+            'triggered':  'Alarm: UDLØST'
+          } %}
+          {{ map.get(alarm, 'Alarm: ?') }}
 
 
 # ---------- Automation ----------

@@ -48,30 +48,6 @@ globals:
     type: bool
     restore_value: no
     initial_value: 'false'
-  - id: ha_hour
-    type: int
-    restore_value: no
-    initial_value: '-1'
-  - id: ha_minute
-    type: int
-    restore_value: no
-    initial_value: '0'
-  - id: ha_weekday
-    type: int
-    restore_value: no
-    initial_value: '0'
-  - id: ha_day
-    type: int
-    restore_value: no
-    initial_value: '0'
-  - id: ha_month
-    type: int
-    restore_value: no
-    initial_value: '0'
-  - id: ha_year
-    type: int
-    restore_value: no
-    initial_value: '0'
 
 # ---------- HTTP Request (pull-model) ----------
 # Tilføj følgende til secrets.yaml:
@@ -126,11 +102,10 @@ script:
                 request_headers:
                   Authorization: !secret ha_authorization
                   Content-Type: "application/json"
-                # Body: JSON payload med én Jinja2-template der returnerer alle
-                # nødvendige sensorværdier som ét JSON-objekt via tojson-filteret.
-                # float(none) → null i JSON hvis sensoren er unavailable.
+                # Henter præ-formaterede strenge fra HA template sensorer.
+                # Al sprog- og formateringslogik ligger i HA_config_epaper.yaml.
                 body: !lambda |-
-                  return R"json({"template":"{% set n=now() %}{% set d={'outdoor_temp':states('sensor.dantherm_outdoor_temperature')|float(none),'indoor_temp':states('sensor.dantherm_extract_temperature')|float(none),'weather_state':states('weather.forecast_home'),'vejr_note':states('input_text.display_vejr_note'),'alarm_status':states('alarm_control_panel.home'),'cal_event_1':states('input_text.display_event_1'),'cal_event_2':states('input_text.display_event_2'),'cal_event_3':states('input_text.display_event_3'),'cal_event_4':states('input_text.display_event_4'),'cal_event_5':states('input_text.display_event_5'),'cal_event_6':states('input_text.display_event_6'),'cal_event_7':states('input_text.display_event_7'),'cal_event_8':states('input_text.display_event_8'),'cal_event_9':states('input_text.display_event_9'),'cal_event_10':states('input_text.display_event_10'),'ha_hour':n.hour,'ha_minute':n.minute,'ha_weekday':n.strftime('%w')|int,'ha_day':n.day,'ha_month':n.month,'ha_year':n.year} %}{{d|tojson}}"})json";
+                  return R"json({"template":"{{ {'date_str':states('sensor.display_date_str'),'time_str':states('sensor.display_time_str'),'weather_str':states('sensor.display_weather_str'),'indoor_str':states('sensor.display_indoor_str'),'vejr_note':states('input_text.display_vejr_note'),'alarm_str':states('sensor.display_alarm_str'),'cal_header':states('input_text.display_cal_header'),'no_events_msg':states('input_text.display_no_events_msg'),'e1':states('input_text.display_event_1'),'e2':states('input_text.display_event_2'),'e3':states('input_text.display_event_3'),'e4':states('input_text.display_event_4'),'e5':states('input_text.display_event_5'),'e6':states('input_text.display_event_6'),'e7':states('input_text.display_event_7'),'e8':states('input_text.display_event_8'),'e9':states('input_text.display_event_9'),'e10':states('input_text.display_event_10')}|tojson }}"})json";
                 on_response:
                   then:
                     - lambda: |-
@@ -145,29 +120,24 @@ script:
                         while ((n = response->read(buf, sizeof(buf))) > 0)
                           body.append(reinterpret_cast<char*>(buf), n);
                         bool ok = json::parse_json(body, [](JsonObject root) {
-                          if (!root["outdoor_temp"].isNull())
-                            id(outdoor_temp).publish_state(root["outdoor_temp"].as<float>());
-                          if (!root["indoor_temp"].isNull())
-                            id(indoor_temp).publish_state(root["indoor_temp"].as<float>());
-                          id(weather_state).publish_state(root["weather_state"] | "unknown");
+                          id(display_date).publish_state(root["date_str"] | "");
+                          id(display_time).publish_state(root["time_str"] | "");
+                          id(display_weather).publish_state(root["weather_str"] | "");
+                          id(display_indoor).publish_state(root["indoor_str"] | "");
                           id(vejr_note).publish_state(root["vejr_note"] | "");
-                          id(alarm_status).publish_state(root["alarm_status"] | "unknown");
-                          id(cal_event_1).publish_state(root["cal_event_1"] | "");
-                          id(cal_event_2).publish_state(root["cal_event_2"] | "");
-                          id(cal_event_3).publish_state(root["cal_event_3"] | "");
-                          id(cal_event_4).publish_state(root["cal_event_4"] | "");
-                          id(cal_event_5).publish_state(root["cal_event_5"] | "");
-                          id(cal_event_6).publish_state(root["cal_event_6"] | "");
-                          id(cal_event_7).publish_state(root["cal_event_7"] | "");
-                          id(cal_event_8).publish_state(root["cal_event_8"] | "");
-                          id(cal_event_9).publish_state(root["cal_event_9"] | "");
-                          id(cal_event_10).publish_state(root["cal_event_10"] | "");
-                          id(ha_hour)    = root["ha_hour"]    | -1;
-                          id(ha_minute)  = root["ha_minute"]  | 0;
-                          id(ha_weekday) = root["ha_weekday"] | 0;
-                          id(ha_day)     = root["ha_day"]     | 0;
-                          id(ha_month)   = root["ha_month"]   | 0;
-                          id(ha_year)    = root["ha_year"]    | 0;
+                          id(display_alarm).publish_state(root["alarm_str"] | "");
+                          id(cal_header).publish_state(root["cal_header"] | "");
+                          id(no_events_msg).publish_state(root["no_events_msg"] | "");
+                          id(cal_event_1).publish_state(root["e1"] | "");
+                          id(cal_event_2).publish_state(root["e2"] | "");
+                          id(cal_event_3).publish_state(root["e3"] | "");
+                          id(cal_event_4).publish_state(root["e4"] | "");
+                          id(cal_event_5).publish_state(root["e5"] | "");
+                          id(cal_event_6).publish_state(root["e6"] | "");
+                          id(cal_event_7).publish_state(root["e7"] | "");
+                          id(cal_event_8).publish_state(root["e8"] | "");
+                          id(cal_event_9).publish_state(root["e9"] | "");
+                          id(cal_event_10).publish_state(root["e10"] | "");
                           return true;
                         });
                         if (ok) {
@@ -232,117 +202,115 @@ sensor:
     unit_of_measurement: "V"
     accuracy_decimals: 2
 
-  # Udfyldes via publish_state() i HTTP on_response-lambdaen ovenfor.
-  # Initial state er NAN så display-koden kan skelne "ingen data" fra "0.0°C".
-  - platform: template
-    id: outdoor_temp
-    name: "Outdoor Temperature"
-    unit_of_measurement: "°C"
-    accuracy_decimals: 1
-    internal: true
-    lambda: 'return NAN;'
-    update_interval: never
-
-  - platform: template
-    id: indoor_temp
-    name: "Indoor Temperature"
-    unit_of_measurement: "°C"
-    accuracy_decimals: 1
-    internal: true
-    lambda: 'return NAN;'
-    update_interval: never
-
 # ---------- Text sensors (udfyldes via publish_state() i HTTP on_response-lambdaen) ----------
+# Al formatering og sprogtilpasning sker i HA – se HA_config_epaper.yaml.
 text_sensor:
   - platform: template
-    id: weather_state
-    name: "Weather State"
-    internal: true
-    lambda: 'return {"unavailable"};'
-    update_interval: never
-
-  - platform: template
-    id: cal_event_1
-    name: "Calendar Event 1"
+    id: display_date
     internal: true
     lambda: 'return {""};'
     update_interval: never
 
   - platform: template
-    id: cal_event_2
-    name: "Calendar Event 2"
+    id: display_time
     internal: true
     lambda: 'return {""};'
     update_interval: never
 
   - platform: template
-    id: cal_event_3
-    name: "Calendar Event 3"
+    id: display_weather
     internal: true
     lambda: 'return {""};'
     update_interval: never
 
   - platform: template
-    id: cal_event_4
-    name: "Calendar Event 4"
-    internal: true
-    lambda: 'return {""};'
-    update_interval: never
-
-  - platform: template
-    id: cal_event_5
-    name: "Calendar Event 5"
-    internal: true
-    lambda: 'return {""};'
-    update_interval: never
-
-  - platform: template
-    id: cal_event_6
-    name: "Calendar Event 6"
-    internal: true
-    lambda: 'return {""};'
-    update_interval: never
-
-  - platform: template
-    id: cal_event_7
-    name: "Calendar Event 7"
-    internal: true
-    lambda: 'return {""};'
-    update_interval: never
-
-  - platform: template
-    id: cal_event_8
-    name: "Calendar Event 8"
-    internal: true
-    lambda: 'return {""};'
-    update_interval: never
-
-  - platform: template
-    id: cal_event_9
-    name: "Calendar Event 9"
-    internal: true
-    lambda: 'return {""};'
-    update_interval: never
-
-  - platform: template
-    id: cal_event_10
-    name: "Calendar Event 10"
+    id: display_indoor
     internal: true
     lambda: 'return {""};'
     update_interval: never
 
   - platform: template
     id: vejr_note
-    name: "Vejr Note"
     internal: true
     lambda: 'return {""};'
     update_interval: never
 
   - platform: template
-    id: alarm_status
-    name: "Alarm Status"
+    id: display_alarm
     internal: true
-    lambda: 'return {"unknown"};'
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
+    id: cal_header
+    internal: true
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
+    id: no_events_msg
+    internal: true
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
+    id: cal_event_1
+    internal: true
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
+    id: cal_event_2
+    internal: true
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
+    id: cal_event_3
+    internal: true
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
+    id: cal_event_4
+    internal: true
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
+    id: cal_event_5
+    internal: true
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
+    id: cal_event_6
+    internal: true
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
+    id: cal_event_7
+    internal: true
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
+    id: cal_event_8
+    internal: true
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
+    id: cal_event_9
+    internal: true
+    lambda: 'return {""};'
+    update_interval: never
+
+  - platform: template
+    id: cal_event_10
+    internal: true
+    lambda: 'return {""};'
     update_interval: never
 
 # ---------- Fonts ----------
@@ -386,72 +354,32 @@ display:
 
       it.fill(BG);
 
-      // ── Dato + tid (fra HA HTTP response) ─────────────
+      // ── Dato + tid (præformateret fra HA) ─────────────
       int y = M;
-      if (id(ha_hour) >= 0) {
-        const char* ugedage[] = {
-          "Søndag","Mandag","Tirsdag","Onsdag","Torsdag","Fredag","Lørdag"
-        };
-        const char* maaneder[] = {
-          "","jan","feb","mar","apr","maj","jun","jul","aug","sep","okt","nov","dec"
-        };
-        char dato[32];
-        snprintf(dato, sizeof(dato), "%s %d. %s %d",
-          ugedage[id(ha_weekday)], id(ha_day),
-          maaneder[id(ha_month)], id(ha_year));
-        it.print(M, y, id(font_large), FG, dato);
-
-        char tid[8];
-        snprintf(tid, sizeof(tid), "%02d:%02d", id(ha_hour), id(ha_minute));
-        it.print(W - M, y, id(font_large), FG, TextAlign::TOP_RIGHT, tid);
+      std::string date_s = id(display_date).state;
+      std::string time_s = id(display_time).state;
+      if (!date_s.empty() && date_s != "unavailable") {
+        it.print(M, y, id(font_large), FG, date_s.c_str());
+        it.print(W - M, y, id(font_large), FG, TextAlign::TOP_RIGHT, time_s.c_str());
       } else {
-        it.print(M, y, id(font_large), FG, "Ingen tid");
+        it.print(M, y, id(font_large), FG, "...");
       }
 
       y += 32;
       it.line(M, y, W - M, y, FG);
       y += 6;
 
-      // ── Vejr + temperaturer ───────────────────────────
-      std::string ws = id(weather_state).state;
-      const char* vejr =
-        ws == "sunny"            ? "Solskin" :
-        ws == "clear-night"      ? "Klar nat" :
-        ws == "partlycloudy"     ? "Lidt skyer" :
-        ws == "cloudy"           ? "Overskyet" :
-        ws == "rainy"            ? "Regnvejr" :
-        ws == "pouring"          ? "Kraftigt regn" :
-        ws == "snowy"            ? "Snevejr" :
-        ws == "snowy-rainy"      ? "Slud" :
-        ws == "windy"            ? "Blæsevejr" :
-        ws == "windy-variant"    ? "Blæsevejr" :
-        ws == "fog"              ? "Tåget" :
-        ws == "hail"             ? "Haglvejr" :
-        ws == "lightning"        ? "Tordenvejr" :
-        ws == "lightning-rainy"  ? "Torden og regn" :
-        ws == "exceptional"      ? "Usædvanligt" : "?";
+      // ── Vejr (præformateret fra HA) ───────────────────
+      std::string weather_s = id(display_weather).state;
+      if (!weather_s.empty() && weather_s != "unavailable")
+        it.print(M, y, id(font_medium), FG, weather_s.c_str());
 
-      float ude  = id(outdoor_temp).state;
-      float inde = id(indoor_temp).state;
-
-      // Vejr + udetemperatur på én linje
-      char vejr_linje[48];
-      if (!isnan(ude))
-        snprintf(vejr_linje, sizeof(vejr_linje), "%s, %.1f°", vejr, ude);
-      else
-        snprintf(vejr_linje, sizeof(vejr_linje), "%s", vejr);
-      it.print(M, y, id(font_medium), FG, vejr_linje);
-
-      // Indendørs temp højrejusteret (skjul hvis 0 eller unavailable)
-      if (!isnan(inde) && inde != 0.0f) {
-        char inde_str[16];
-        snprintf(inde_str, sizeof(inde_str), "Inde %.1f°", inde);
-        it.print(W - M, y, id(font_medium), FG, TextAlign::TOP_RIGHT, inde_str);
-      }
+      std::string indoor_s = id(display_indoor).state;
+      if (!indoor_s.empty() && indoor_s != "unavailable")
+        it.print(W - M, y, id(font_medium), FG, TextAlign::TOP_RIGHT, indoor_s.c_str());
 
       y += 24;
 
-      // Vejr-note fra HA forecast ("Regn fra kl. 14")
       std::string vnote = id(vejr_note).state;
       if (!vnote.empty() && vnote != "unavailable" && vnote != "unknown") {
         it.print(M, y, id(font_small), FG, vnote.c_str());
@@ -462,8 +390,9 @@ display:
       it.line(M, y, W - M, y, FG);
       y += 6;
 
-      // ── Kalender (præformateret fra HA) ──────────────
-      it.print(M, y, id(font_medium), FG, "KALENDER");
+      // ── Kalender ──────────────────────────────────────
+      std::string hdr = id(cal_header).state;
+      it.print(M, y, id(font_medium), FG, hdr.empty() ? "KALENDER" : hdr.c_str());
       y += 22;
 
       const std::string cal_events[] = {
@@ -483,7 +412,8 @@ display:
         vis++;
       }
       if (vis == 0) {
-        it.print(M, y, id(font_small), FG, "Ingen kommende events");
+        std::string no_ev = id(no_events_msg).state;
+        it.print(M, y, id(font_small), FG, no_ev.empty() ? "..." : no_ev.c_str());
         y += 17;
       }
 
@@ -492,12 +422,9 @@ display:
       y += 6;
 
       // ── Alarm ─────────────────────────────────────────
-      std::string alarm = id(alarm_status).state;
-      const char* alarm_txt =
-        (alarm == "armed_away" || alarm == "armed_home") ? "Alarm: ARMET" :
-        alarm == "disarmed"  ? "Alarm: FRA" :
-        alarm == "triggered" ? "Alarm: UDLOEST" : "Alarm: ?";
-      it.print(M, y, id(font_small), FG, alarm_txt);
+      std::string alarm_s = id(display_alarm).state;
+      if (!alarm_s.empty() && alarm_s != "unavailable")
+        it.print(M, y, id(font_small), FG, alarm_s.c_str());
 
       // ── Ramme ─────────────────────────────────────────
       it.rectangle(0, 0, W, H, FG);
