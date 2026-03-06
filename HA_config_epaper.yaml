@@ -94,10 +94,7 @@ template:
           entity_weather:      "weather.forecast_home"
           entity_alarm:        "alarm_control_panel.home"
           entity_calendars:
-            - "calendar.familie"
-            - "calendar.your_calendar_2"
-            - "calendar.your_calendar_3"
-            - "calendar.your_calendar_4"
+            - "calendar.familiy"
 
 # ============================================================
 # TEMPLATE SENSORS – no need to edit below this line
