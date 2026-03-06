@@ -23,69 +23,34 @@ template:
         state: "ok"
         attributes:
           # Weekdays (0=Sunday … 6=Saturday)
-          weekdays:
-            - "Søndag"
-            - "Mandag"
-            - "Tirsdag"
-            - "Onsdag"
-            - "Torsdag"
-            - "Fredag"
-            - "Lørdag"
+          weekdays: "{{ ['Søndag', 'Mandag', 'Tirsdag', 'Onsdag', 'Torsdag', 'Fredag', 'Lørdag'] }}"
           # Months (index 1–12, leave index 0 empty)
-          months:
-            - ""
-            - "jan"
-            - "feb"
-            - "mar"
-            - "apr"
-            - "maj"
-            - "jun"
-            - "jul"
-            - "aug"
-            - "sep"
-            - "okt"
-            - "nov"
-            - "dec"
+          months: "{{ ['', 'jan', 'feb', 'mar', 'apr', 'maj', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dec'] }}"
           # Weather conditions
-          weather_map:
-            sunny:           "Solskin"
-            clear-night:     "Klar nat"
-            partlycloudy:    "Lidt skyer"
-            cloudy:          "Overskyet"
-            rainy:           "Regnvejr"
-            pouring:         "Kraftigt regn"
-            snowy:           "Snevejr"
-            snowy-rainy:     "Slud"
-            windy:           "Blæsevejr"
-            windy-variant:   "Blæsevejr"
-            fog:             "Tåget"
-            hail:            "Haglvejr"
-            lightning:       "Tordenvejr"
-            lightning-rainy: "Torden og regn"
-            exceptional:     "Usædvanligt"
+          weather_map: >-
+            {{ {'sunny': 'Solskin', 'clear-night': 'Klar nat', 'partlycloudy': 'Lidt skyer',
+                'cloudy': 'Overskyet', 'rainy': 'Regnvejr', 'pouring': 'Kraftigt regn',
+                'snowy': 'Snevejr', 'snowy-rainy': 'Slud', 'windy': 'Blæsevejr',
+                'windy-variant': 'Blæsevejr', 'fog': 'Tåget', 'hail': 'Haglvejr',
+                'lightning': 'Tordenvejr', 'lightning-rainy': 'Torden og regn',
+                'exceptional': 'Usædvanligt'} }}
           # Bad weather conditions used in forecast note
-          forecast_bad:
-            rainy:           "Regn"
-            pouring:         "Kraftigt regn"
-            snowy:           "Sne"
-            snowy-rainy:     "Slud"
-            hail:            "Hagl"
-            lightning:       "Torden"
-            lightning-rainy: "Torden og regn"
-          forecast_from:     "fra kl."
+          forecast_bad: >-
+            {{ {'rainy': 'Regn', 'pouring': 'Kraftigt regn', 'snowy': 'Sne',
+                'snowy-rainy': 'Slud', 'hail': 'Hagl', 'lightning': 'Torden',
+                'lightning-rainy': 'Torden og regn'} }}
+          forecast_from: "fra kl."
           # Alarm states
-          alarm_map:
-            armed_away: "Alarm: ARMET"
-            armed_home: "Alarm: ARMET"
-            disarmed:   "Alarm: FRA"
-            triggered:  "Alarm: UDLØST"
+          alarm_map: >-
+            {{ {'armed_away': 'Alarm: ARMET', 'armed_home': 'Alarm: ARMET',
+                'disarmed': 'Alarm: FRA', 'triggered': 'Alarm: UDLØST'} }}
           # Labels
-          indoor_prefix:  "Inde"
-          cal_header:     "KALENDER"
-          no_events:      "Ingen kommende events"
-          today:          "I dag"
-          tomorrow:       "I morgen"
-          day_after:      "Overmorgen"
+          indoor_prefix: "Inde"
+          cal_header:    "KALENDER"
+          no_events:     "Ingen kommende events"
+          today:         "I dag"
+          tomorrow:      "I morgen"
+          day_after:     "Overmorgen"
           # forecast_from: word between bad-weather label and hour, e.g. "Rain from 14"
 
           # ── Entity IDs – update to match your HA instance ──
@@ -93,8 +58,7 @@ template:
           entity_indoor_temp:  "sensor.dantherm_extract_temperature"
           entity_weather:      "weather.forecast_home"
           entity_alarm:        "alarm_control_panel.home"
-          entity_calendars:
-            - "calendar.familiy"
+          entity_calendars: "{{ ['calendar.familie', 'calendar.your_calendar_2', 'calendar.your_calendar_3', 'calendar.your_calendar_4'] }}"
 
 # ============================================================
 # TEMPLATE SENSORS – no need to edit below this line
