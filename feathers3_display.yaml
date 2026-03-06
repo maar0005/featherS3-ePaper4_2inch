@@ -392,7 +392,8 @@ display:
 
       // ── Kalender ──────────────────────────────────────
       std::string hdr = id(cal_header).state;
-      it.print(M, y, id(font_medium), FG, hdr.empty() ? "KALENDER" : hdr.c_str());
+      if (!hdr.empty() && hdr != "unavailable")
+        it.print(M, y, id(font_medium), FG, hdr.c_str());
       y += 22;
 
       const std::string cal_events[] = {
