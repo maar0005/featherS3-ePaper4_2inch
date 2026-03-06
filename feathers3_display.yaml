@@ -42,6 +42,37 @@ api:
 ota:
   - platform: esphome
 
+# ---------- Globals ----------
+globals:
+  - id: data_received
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: ha_hour
+    type: int
+    restore_value: no
+    initial_value: '-1'
+  - id: ha_minute
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: ha_weekday
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: ha_day
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: ha_month
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: ha_year
+    type: int
+    restore_value: no
+    initial_value: '0'
+
 # ---------- HTTP Request (pull-model) ----------
 # Tilføj følgende til secrets.yaml:
 #   ha_template_url: "http://192.168.x.x:8123/api/template"
@@ -50,6 +81,8 @@ http_request:
   id: http_client
   timeout: 10s
   verify_ssl: false
+  buffer_size_rx: 2048
+  buffer_size_tx: 2048
 
 # ---------- JSON parsing ----------
 json:
@@ -69,14 +102,20 @@ deep_sleep:
     inverted: true
 
 # ---------- Script: vent på WiFi, pull data via REST, opdater display, sov ----------
+# Logik:
+#   1. Vent på WiFi (max 30s)
+#   2. Send HTTP POST til HA og sæt data_received=true ved success
+#   3. Vent til data_received=true – eller max 60s total fra start
+#   4. Opdater display og sov
 script:
   - id: update_and_sleep
     then:
       - deep_sleep.prevent: deep_sleep_control
+      - lambda: 'id(data_received) = false;'
       - wait_until:
           condition:
             wifi.connected:
-          timeout: 15s
+          timeout: 30s
       - if:
           condition:
             wifi.connected:
@@ -91,7 +130,7 @@ script:
                 # nødvendige sensorværdier som ét JSON-objekt via tojson-filteret.
                 # float(none) → null i JSON hvis sensoren er unavailable.
                 body: !lambda |-
-                  return R"json({"template":"{% set d={'outdoor_temp':states('sensor.dantherm_outdoor_temperature')|float(none),'indoor_temp':states('sensor.dantherm_extract_temperature')|float(none),'weather_state':states('weather.forecast_home'),'vejr_note':states('input_text.display_vejr_note'),'alarm_status':states('alarm_control_panel.home'),'cal_event_1':states('input_text.display_event_1'),'cal_event_2':states('input_text.display_event_2'),'cal_event_3':states('input_text.display_event_3'),'cal_event_4':states('input_text.display_event_4'),'cal_event_5':states('input_text.display_event_5'),'cal_event_6':states('input_text.display_event_6'),'cal_event_7':states('input_text.display_event_7'),'cal_event_8':states('input_text.display_event_8'),'cal_event_9':states('input_text.display_event_9'),'cal_event_10':states('input_text.display_event_10')} %}{{d|tojson}}"})json";
+                  return R"json({"template":"{% set n=now() %}{% set d={'outdoor_temp':states('sensor.dantherm_outdoor_temperature')|float(none),'indoor_temp':states('sensor.dantherm_extract_temperature')|float(none),'weather_state':states('weather.forecast_home'),'vejr_note':states('input_text.display_vejr_note'),'alarm_status':states('alarm_control_panel.home'),'cal_event_1':states('input_text.display_event_1'),'cal_event_2':states('input_text.display_event_2'),'cal_event_3':states('input_text.display_event_3'),'cal_event_4':states('input_text.display_event_4'),'cal_event_5':states('input_text.display_event_5'),'cal_event_6':states('input_text.display_event_6'),'cal_event_7':states('input_text.display_event_7'),'cal_event_8':states('input_text.display_event_8'),'cal_event_9':states('input_text.display_event_9'),'cal_event_10':states('input_text.display_event_10'),'ha_hour':n.hour,'ha_minute':n.minute,'ha_weekday':n.strftime('%w')|int,'ha_day':n.day,'ha_month':n.month,'ha_year':n.year} %}{{d|tojson}}"})json";
                 on_response:
                   then:
                     - lambda: |-
@@ -99,25 +138,20 @@ script:
                           ESP_LOGW("ha_pull", "HTTP fejl fra HA: status %d", response->status_code);
                           return;
                         }
-                        // id(http_client).get_string() returnerer svarbody fra seneste HTTP-kald.
-                        // Alternativ for ældre ESPHome (< 2024.6): brug response->body i stedet.
-                        bool ok = json::parse_json(id(http_client).get_string(), [](JsonObject root) {
-                          // ── Numeriske sensorer ─────────────────────────────────────────
-                          // isNull()-tjek sikrer at vi publicerer NAN (initial state) ved
-                          // unavailable sensorer frem for 0.0.
+                        std::string body;
+                        body.reserve(response->content_length > 0 ? response->content_length : 512);
+                        uint8_t buf[128];
+                        int n;
+                        while ((n = response->read(buf, sizeof(buf))) > 0)
+                          body.append(reinterpret_cast<char*>(buf), n);
+                        bool ok = json::parse_json(body, [](JsonObject root) {
                           if (!root["outdoor_temp"].isNull())
                             id(outdoor_temp).publish_state(root["outdoor_temp"].as<float>());
                           if (!root["indoor_temp"].isNull())
                             id(indoor_temp).publish_state(root["indoor_temp"].as<float>());
-
-                          // ── Vejr ───────────────────────────────────────────────────────
                           id(weather_state).publish_state(root["weather_state"] | "unknown");
                           id(vejr_note).publish_state(root["vejr_note"] | "");
-
-                          // ── Alarm ──────────────────────────────────────────────────────
                           id(alarm_status).publish_state(root["alarm_status"] | "unknown");
-
-                          // ── Kalender-events ────────────────────────────────────────────
                           id(cal_event_1).publish_state(root["cal_event_1"] | "");
                           id(cal_event_2).publish_state(root["cal_event_2"] | "");
                           id(cal_event_3).publish_state(root["cal_event_3"] | "");
@@ -128,16 +162,56 @@ script:
                           id(cal_event_8).publish_state(root["cal_event_8"] | "");
                           id(cal_event_9).publish_state(root["cal_event_9"] | "");
                           id(cal_event_10).publish_state(root["cal_event_10"] | "");
+                          id(ha_hour)    = root["ha_hour"]    | -1;
+                          id(ha_minute)  = root["ha_minute"]  | 0;
+                          id(ha_weekday) = root["ha_weekday"] | 0;
+                          id(ha_day)     = root["ha_day"]     | 0;
+                          id(ha_month)   = root["ha_month"]   | 0;
+                          id(ha_year)    = root["ha_year"]    | 0;
+                          return true;
                         });
-                        if (!ok)
-                          ESP_LOGW("ha_pull", "JSON parse fejl – viser tomt display");
+                        if (ok) {
+                          ESP_LOGI("ha_pull", "Data modtaget og parsed OK");
+                          id(data_received) = true;
+                        } else {
+                          ESP_LOGW("ha_pull", "JSON parse fejl");
+                        }
+            # HTTP er synkront – data_received er allerede sat hvis det lykkedes.
+            # wait_until nedenfor håndterer edge cases og giver en klar max-grænse.
+            - wait_until:
+                condition:
+                  lambda: 'return id(data_received);'
+                timeout: 30s
+            - if:
+                condition:
+                  lambda: 'return id(data_received);'
+                then:
+                  - logger.log: "✓ Data bekræftet – opdaterer display"
+                else:
+                  - logger.log: "✗ Ingen data fra HA (timeout/fejl) – opdaterer display med gamle værdier"
           else:
-            - logger.log: "WiFi timeout – kører display-opdatering uden friske data"
-      - logger.log: "Opdaterer display"
+            - logger.log: "WiFi timeout – opdaterer display uden friske data"
       - component.update: epaper
       - delay: 10s        # Waveshare 4.2" bruger 4-6s på fuldt refresh
       - output.turn_off: ldo2_enable
-      - deep_sleep.enter: deep_sleep_control
+      - if:
+          condition:
+            binary_sensor.is_on: maintenance_mode
+          then:
+            - logger.log: "Maintenance mode aktiv – deep sleep forhindret (OTA klar)"
+          else:
+            - deep_sleep.enter: deep_sleep_control
+
+# ---------- Maintenance mode pin (GPIO3, active LOW – sæt til GND for at forhindre deep sleep) ----------
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO3
+      mode: INPUT_PULLUP
+      inverted: true
+    id: maintenance_mode
+    name: "Maintenance Mode"
+    internal: true
 
 # ---------- LDO2 enable (GPIO39 → 3V3_SW → display VCC) ----------
 output:
@@ -311,11 +385,10 @@ display:
       Color FG = COLOR_ON;   // sort tekst
 
       it.fill(BG);
-      auto now = id(sntp_time).now();
 
-      // ── Dato + tid ────────────────────────────────────
+      // ── Dato + tid (fra HA HTTP response) ─────────────
       int y = M;
-      if (now.is_valid()) {
+      if (id(ha_hour) >= 0) {
         const char* ugedage[] = {
           "Søndag","Mandag","Tirsdag","Onsdag","Torsdag","Fredag","Lørdag"
         };
@@ -324,12 +397,12 @@ display:
         };
         char dato[32];
         snprintf(dato, sizeof(dato), "%s %d. %s %d",
-          ugedage[now.day_of_week], now.day_of_month,
-          maaneder[now.month], now.year);
+          ugedage[id(ha_weekday)], id(ha_day),
+          maaneder[id(ha_month)], id(ha_year));
         it.print(M, y, id(font_large), FG, dato);
 
         char tid[8];
-        snprintf(tid, sizeof(tid), "%02d:%02d", now.hour, now.minute);
+        snprintf(tid, sizeof(tid), "%02d:%02d", id(ha_hour), id(ha_minute));
         it.print(W - M, y, id(font_large), FG, TextAlign::TOP_RIGHT, tid);
       } else {
         it.print(M, y, id(font_large), FG, "Ingen tid");
