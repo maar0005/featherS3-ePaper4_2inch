@@ -110,6 +110,7 @@ Download **Roboto Regular** and **Roboto Bold** from [Google Fonts](https://font
 ### 2. Configure secrets
 
 Copy or edit `secrets.yaml` with your own values:
+"Bearer" in front of token is needed. 
 
 ```yaml
 wifi_ssid: "YourNetwork"
