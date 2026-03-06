@@ -88,6 +88,17 @@ template:
           day_after:      "Overmorgen"
           # forecast_from: word between bad-weather label and hour, e.g. "Rain from 14"
 
+          # ── Entity IDs – update to match your HA instance ──
+          entity_outdoor_temp: "sensor.dantherm_outdoor_temperature"
+          entity_indoor_temp:  "sensor.dantherm_extract_temperature"
+          entity_weather:      "weather.forecast_home"
+          entity_alarm:        "alarm_control_panel.home"
+          entity_calendars:
+            - "calendar.familie"
+            - "calendar.your_calendar_2"
+            - "calendar.your_calendar_3"
+            - "calendar.your_calendar_4"
+
 # ============================================================
 # TEMPLATE SENSORS – no need to edit below this line
 # ============================================================
@@ -103,21 +114,21 @@ template:
 
       - name: "display_weather_str"
         state: >
-          {% set ws = states('weather.forecast_home') %}
+          {% set ws = states(state_attr('sensor.display_lang', 'entity_weather')) %}
           {% set map = state_attr('sensor.display_lang', 'weather_map') %}
           {% set vejr = map.get(ws, ws) %}
-          {% set ude = states('sensor.dantherm_outdoor_temperature')|float(none) %}
+          {% set ude = states(state_attr('sensor.display_lang', 'entity_outdoor_temp'))|float(none) %}
           {{ vejr }}{% if ude is not none %}, {{ ude|round(1) }}°{% endif %}
 
       - name: "display_indoor_str"
         state: >
-          {% set inde = states('sensor.dantherm_extract_temperature')|float(none) %}
+          {% set inde = states(state_attr('sensor.display_lang', 'entity_indoor_temp'))|float(none) %}
           {% set prefix = state_attr('sensor.display_lang', 'indoor_prefix') %}
           {% if inde is not none and inde != 0 %}{{ prefix }} {{ inde|round(1) }}°{% endif %}
 
       - name: "display_alarm_str"
         state: >
-          {% set alarm = states('alarm_control_panel.home') %}
+          {% set alarm = states(state_attr('sensor.display_lang', 'entity_alarm')) %}
           {% set map = state_attr('sensor.display_lang', 'alarm_map') %}
           {{ map.get(alarm, '?') }}
 
@@ -163,9 +174,9 @@ automation:
   - id: epaper_opdater_kalender_og_vejr
     alias: "Update display calendar and weather"
     description: >
-      Fetches calendar events from 4 calendars and hourly forecasts
-      from weather.forecast_home. Updates input_text helpers every
-      15 minutes so ESPHome can display them.
+      Fetches calendar events and hourly weather forecasts.
+      Updates input_text helpers every 15 minutes so ESPHome can display them.
+      Entity IDs are configured in sensor.display_lang attributes.
     trigger:
       - platform: time_pattern
         minutes: "/15"
@@ -179,11 +190,7 @@ automation:
           duration:
             days: 14
         target:
-          entity_id:
-            - calendar.familie
-            - calendar.your_calendar_2
-            - calendar.your_calendar_3
-            - calendar.your_calendar_4
+          entity_id: "{{ state_attr('sensor.display_lang', 'entity_calendars') }}"
         response_variable: cal_events
 
       - variables:
@@ -230,7 +237,7 @@ automation:
         data:
           type: hourly
         target:
-          entity_id: weather.forecast_home
+          entity_id: "{{ state_attr('sensor.display_lang', 'entity_weather') }}"
         response_variable: forecast_data
 
       - action: input_text.set_value
@@ -238,10 +245,11 @@ automation:
           entity_id: input_text.display_vejr_note
         data:
           value: >
-            {% set forecasts = forecast_data['weather.forecast_home']['forecast'] %}
+            {% set weather_entity = state_attr('sensor.display_lang', 'entity_weather') %}
+            {% set forecasts = forecast_data[weather_entity]['forecast'] %}
             {% set bad = state_attr('sensor.display_lang', 'forecast_bad') %}
             {% set from_str = state_attr('sensor.display_lang', 'forecast_from') %}
-            {% set current = states('weather.forecast_home') %}
+            {% set current = states(weather_entity) %}
             {% set ns = namespace(note='') %}
             {% for fc in forecasts[:12] %}
               {% if fc.condition in bad and ns.note == '' %}
