@@ -173,7 +173,7 @@ automation:
         event: start
     action:
 
-      # ── Kalender ──────────────────────────────────────
+      # ── Calender ──────────────────────────────────────
       - action: calendar.get_events
         data:
           duration:
@@ -225,7 +225,7 @@ automation:
                   {% set ev = sorted_events | trim | from_json %}
                   {{ ev[repeat.index - 1].text if ev | length >= repeat.index else '' }}
 
-      # ── Vejr-prognose: "Regn fra kl. 14" ─────────────
+      # ── Weather ─────────────
       - action: weather.get_forecasts
         data:
           type: hourly
