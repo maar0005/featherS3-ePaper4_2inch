@@ -48,3 +48,10 @@ jobs:
 
       - name: Validate feathers3_display.yaml
         run: esphome config feathers3_display.yaml
+
+      - name: Compile feathers3_display.yaml
+        run: esphome compile feathers3_display.yaml
+
+      - name: Remove build artifacts
+        if: always()
+        run: rm -rf .esphome build
