@@ -37,13 +37,12 @@ jobs:
           api_password: "dummy-api-password"
           EOF
 
-      - name: Download Roboto fonts
+      - name: Install Roboto fonts
         run: |
+          sudo apt-get install -y fonts-roboto
           mkdir -p fonts
-          curl -sSfL "https://github.com/google/fonts/raw/main/apache/roboto/static/Roboto-Regular.ttf" \
-            -o fonts/Roboto-Regular.ttf
-          curl -sSfL "https://github.com/google/fonts/raw/main/apache/roboto/static/Roboto-Bold.ttf" \
-            -o fonts/Roboto-Bold.ttf
+          find /usr/share/fonts -name "Roboto-Regular.ttf" | head -1 | xargs -I{} cp {} fonts/Roboto-Regular.ttf
+          find /usr/share/fonts -name "Roboto-Bold.ttf"    | head -1 | xargs -I{} cp {} fonts/Roboto-Bold.ttf
 
       - name: Validate feathers3_display.yaml
         run: esphome config feathers3_display.yaml
