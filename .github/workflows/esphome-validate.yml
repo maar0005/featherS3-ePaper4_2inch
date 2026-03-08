@@ -35,6 +35,9 @@ jobs:
           wifi_ssid: "dummy-ssid"
           wifi_password: "dummy-password"
           api_password: "dummy-api-password"
+          api_encryption_key: "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+          ha_template_url: "http://192.168.1.1:8123/api/template"
+          ha_authorization: "Bearer dummy-token"
           EOF
 
       - name: Install Roboto fonts
