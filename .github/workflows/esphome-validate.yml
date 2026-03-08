@@ -1,0 +1,50 @@
+name: Validate ESPHome Config
+
+on:
+  push:
+    branches: [main, master, "claude/**"]
+    paths:
+      - "*.yaml"
+      - ".github/workflows/esphome-validate.yml"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "*.yaml"
+      - ".github/workflows/esphome-validate.yml"
+
+jobs:
+  validate:
+    name: esphome config
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install ESPHome
+        run: pip install esphome
+
+      - name: Create dummy secrets.yaml
+        run: |
+          cat > secrets.yaml <<'EOF'
+          wifi_ssid: "dummy-ssid"
+          wifi_password: "dummy-password"
+          api_password: "dummy-api-password"
+          EOF
+
+      - name: Download Roboto fonts
+        run: |
+          mkdir -p fonts
+          curl -sSfL "https://github.com/google/fonts/raw/main/apache/roboto/static/Roboto-Regular.ttf" \
+            -o fonts/Roboto-Regular.ttf
+          curl -sSfL "https://github.com/google/fonts/raw/main/apache/roboto/static/Roboto-Bold.ttf" \
+            -o fonts/Roboto-Bold.ttf
+
+      - name: Validate feathers3_display.yaml
+        run: esphome config feathers3_display.yaml
