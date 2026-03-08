@@ -189,7 +189,7 @@ output:
     pin: GPIO39
     id: ldo2_enable
 
-# ---------- Battery (sensor til HA, vises ikke på display) ----------
+# ---------- Battery -------------------------------------------------------
 sensor:
   - platform: adc
     pin: GPIO2
@@ -197,10 +197,41 @@ sensor:
     name: "Battery Voltage"
     update_interval: 30s
     attenuation: 12db
+    samples: 16                 # Oversampling: 16 hardware readings averaged per update (mitigates ADC jitter + WiFi sag)
     filters:
-      - multiply: 2.0
+      - multiply: 1.4545        # External 100kΩ/220kΩ divider compensation: (100+220)/220 = 1.4545
     unit_of_measurement: "V"
     accuracy_decimals: 2
+
+  - platform: template
+    id: battery_percent
+    name: "Battery Percent"
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    icon: "mdi:battery"
+    update_interval: 30s
+    lambda: |-
+      // Non-linear Li-ion discharge LUT (piecewise linear interpolation).
+      // 18650 S-curve breakpoints:
+      //   4.20V=100%  4.10V=90%  4.00V=80%  3.90V=70%  3.80V=60%
+      //   3.70V=50%   3.60V=40%  3.50V=30%  3.40V=20%  3.30V=10%
+      //   3.20V=5%    3.10V=2%   3.00V=0%
+      float v = id(battery_voltage).state;
+      if (isnan(v)) return {};
+      if (v >= 4.20f) return 100.0f;
+      if (v >= 4.10f) return 90.0f + (v - 4.10f) / 0.10f * 10.0f;
+      if (v >= 4.00f) return 80.0f + (v - 4.00f) / 0.10f * 10.0f;
+      if (v >= 3.90f) return 70.0f + (v - 3.90f) / 0.10f * 10.0f;
+      if (v >= 3.80f) return 60.0f + (v - 3.80f) / 0.10f * 10.0f;
+      if (v >= 3.70f) return 50.0f + (v - 3.70f) / 0.10f * 10.0f;
+      if (v >= 3.60f) return 40.0f + (v - 3.60f) / 0.10f * 10.0f;
+      if (v >= 3.50f) return 30.0f + (v - 3.50f) / 0.10f * 10.0f;
+      if (v >= 3.40f) return 20.0f + (v - 3.40f) / 0.10f * 10.0f;
+      if (v >= 3.30f) return 10.0f + (v - 3.30f) / 0.10f * 10.0f;
+      if (v >= 3.20f) return  5.0f + (v - 3.20f) / 0.10f *  5.0f;
+      if (v >= 3.10f) return  2.0f + (v - 3.10f) / 0.10f *  3.0f;
+      if (v >= 3.00f) return  0.0f + (v - 3.00f) / 0.10f *  2.0f;
+      return 0.0f;
 
 # ---------- Text sensors (udfyldes via publish_state() i HTTP on_response-lambdaen) ----------
 # Al formatering og sprogtilpasning sker i HA – se HA_config_epaper.yaml.
@@ -422,10 +453,16 @@ display:
       it.line(M, y, W - M, y, FG);
       y += 6;
 
-      // ── Alarm ─────────────────────────────────────────
+      // ── Alarm (left) + Battery % (right) ──────────────
       std::string alarm_s = id(display_alarm).state;
       if (!alarm_s.empty() && alarm_s != "unavailable")
         it.print(M, y, id(font_small), FG, alarm_s.c_str());
+
+      if (!isnan(id(battery_percent).state)) {
+        char bat_str[12];
+        snprintf(bat_str, sizeof(bat_str), "Bat: %d%%", (int)id(battery_percent).state);
+        it.print(W - M, y, id(font_small), FG, TextAlign::TOP_RIGHT, bat_str);
+      }
 
       // ── Ramme ─────────────────────────────────────────
       it.rectangle(0, 0, W, H, FG);
