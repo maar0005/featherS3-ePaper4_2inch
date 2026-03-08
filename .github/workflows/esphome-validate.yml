@@ -1,0 +1,58 @@
+name: Validate ESPHome Config
+
+on:
+  push:
+    branches: [main, master, "claude/**"]
+    paths:
+      - "*.yaml"
+      - ".github/workflows/esphome-validate.yml"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "*.yaml"
+      - ".github/workflows/esphome-validate.yml"
+
+jobs:
+  validate:
+    name: esphome config
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ESPHome
+        run: pip install esphome
+
+      - name: Create dummy secrets.yaml
+        run: |
+          cat > secrets.yaml <<'EOF'
+          wifi_ssid: "dummy-ssid"
+          wifi_password: "dummy-password"
+          api_password: "dummy-api-password"
+          api_encryption_key: "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+          ha_template_url: "http://192.168.1.1:8123/api/template"
+          ha_authorization: "Bearer dummy-token"
+          EOF
+
+      - name: Install Roboto fonts
+        run: |
+          sudo apt-get install -y fonts-roboto
+          mkdir -p fonts
+          find /usr/share/fonts -name "Roboto-Regular.ttf" | head -1 | xargs -I{} cp {} fonts/Roboto-Regular.ttf
+          find /usr/share/fonts -name "Roboto-Bold.ttf"    | head -1 | xargs -I{} cp {} fonts/Roboto-Bold.ttf
+
+      - name: Validate feathers3_display.yaml
+        run: esphome config feathers3_display.yaml
+
+      - name: Compile feathers3_display.yaml
+        run: esphome compile feathers3_display.yaml
+
+      - name: Remove build artifacts
+        if: always()
+        run: rm -rf .esphome build
