@@ -1,3 +1,23 @@
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │  USER CONFIGURATION — edit these before flashing                           │
+# │  Credentials (WiFi, API key, HA URL/token) go in secrets.yaml             │
+# └─────────────────────────────────────────────────────────────────────────────┘
+
+substitutions:
+  # GPIO pin assignments
+  # FeatherS3 defaults shown. See README for ESP32-S3-WROOM-1 N16R8 pin guide.
+  pin_spi_mosi:    "GPIO11"   # ePaper DIN
+  pin_spi_sck:     "GPIO12"   # ePaper CLK
+  pin_epaper_cs:   "GPIO10"   # ePaper CS
+  pin_epaper_dc:   "GPIO5"    # ePaper DC
+  pin_epaper_rst:  "GPIO14"   # ePaper RST
+  pin_epaper_busy: "GPIO6"    # ePaper BUSY
+  pin_battery:     "GPIO2"    # Battery voltage ADC — must be an ADC1 pin
+  pin_ldo2:        "GPIO39"   # LDO2 enable — cuts display power during sleep
+  pin_maintenance: "GPIO3"    # Maintenance mode (bridge to GND = stay awake for OTA)
+  pin_wakeup:      "GPIO0"    # Deep-sleep wake-up pin (BOOT button)
+
+# ─────────────────────────────────────────────────────────────────────────────
 esphome:
   name: entre-display
   friendly_name: Entre Display
@@ -74,7 +94,7 @@ deep_sleep:
   id: deep_sleep_control
   sleep_duration: 10min
   wakeup_pin:
-    number: GPIO0
+    number: ${pin_wakeup}
     inverted: true
 
 # ---------- Script: vent på WiFi, pull data via REST, opdater display, sov ----------
@@ -176,7 +196,7 @@ script:
 binary_sensor:
   - platform: gpio
     pin:
-      number: GPIO3
+      number: ${pin_maintenance}
       mode: INPUT_PULLUP
       inverted: true
     id: maintenance_mode
@@ -186,13 +206,13 @@ binary_sensor:
 # ---------- LDO2 enable (GPIO39 → 3V3_SW → display VCC) ----------
 output:
   - platform: gpio
-    pin: GPIO39
+    pin: ${pin_ldo2}
     id: ldo2_enable
 
 # ---------- Battery -------------------------------------------------------
 sensor:
   - platform: adc
-    pin: GPIO2
+    pin: ${pin_battery}
     id: battery_voltage
     name: "Battery Voltage"
     update_interval: 30s
@@ -361,17 +381,17 @@ font:
 
 # ---------- SPI ----------
 spi:
-  clk_pin: GPIO12
-  mosi_pin: GPIO11
+  clk_pin: ${pin_spi_sck}
+  mosi_pin: ${pin_spi_mosi}
 
 # ---------- ePaper Display ----------
 display:
   - platform: waveshare_epaper
     id: epaper
-    cs_pin: GPIO10
-    dc_pin: GPIO5
-    busy_pin: GPIO6
-    reset_pin: GPIO14
+    cs_pin: ${pin_epaper_cs}
+    dc_pin: ${pin_epaper_dc}
+    busy_pin: ${pin_epaper_busy}
+    reset_pin: ${pin_epaper_rst}
     model: 4.20in
     update_interval: never
     rotation: 0°
