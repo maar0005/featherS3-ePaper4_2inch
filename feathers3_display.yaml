@@ -13,8 +13,8 @@ substitutions:
   pin_epaper_rst:  "GPIO5"    # ePaper RST
   pin_epaper_busy: "GPIO4"    # ePaper BUSY
   pin_battery:     "GPIO2"    # Battery voltage ADC — must be an ADC1 pin
-  pin_maintenance: "GPIO3"    # Maintenance mode (bridge to GND on fresh boot = OTA mode)
-  pin_wakeup:      "GPIO0"    # Deep-sleep wake-up pin (BOOT button)
+  pin_maintenance: "GPIO3"    # Maintenance/wake pin: press during sleep = early wake; hold on fresh boot = OTA mode
+  pin_wakeup:      "GPIO0"    # Additional wake pin (BOOT button) — also wakes from sleep
 
 # ─────────────────────────────────────────────────────────────────────────────
 esphome:
@@ -115,9 +115,8 @@ time:
 deep_sleep:
   id: deep_sleep_control
   sleep_duration: 30min
-  wakeup_pin:
-    number: ${pin_wakeup}
-    inverted: true
+  # Wakeup pins are configured manually in the script so both GPIO0 and GPIO3
+  # can be used. ESPHome's wakeup_pin: only supports one pin.
 
 # ---------- Interval: opdater display hvert minut i OTA/maintenance mode ----------
 interval:
@@ -225,6 +224,12 @@ script:
           then:
             - logger.log: "Maintenance mode aktiv – deep sleep forhindret (OTA klar)"
           else:
+            - lambda: |-
+                // GPIO0 (BOOT) and GPIO3 (maintenance/wake) both wake from deep sleep.
+                // Using ext1 with a bitmask since ESP32-S3 doesn't support ext0.
+                // ANY_LOW: either pin going LOW wakes the device.
+                uint64_t mask = (1ULL << GPIO_NUM_0) | (1ULL << GPIO_NUM_3);
+                esp_sleep_enable_ext1_wakeup(mask, ESP_EXT1_WAKEUP_ANY_LOW);
             - deep_sleep.enter: deep_sleep_control
 
 # ---------- Maintenance mode pin (GPIO3, active LOW – sæt til GND for at forhindre deep sleep) ----------
