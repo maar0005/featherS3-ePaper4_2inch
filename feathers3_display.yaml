@@ -216,6 +216,15 @@ script:
                   - logger.log: "✗ Ingen data fra HA (timeout/fejl) – opdaterer display med gamle værdier"
           else:
             - logger.log: "WiFi timeout – opdaterer display uden friske data"
+      - repeat:
+          count: 3
+          then:
+            - component.update: battery_voltage
+            - delay: 1s
+      - wait_until:
+          condition:
+            lambda: 'return !isnan(id(battery_percent).state);'
+          timeout: 10s
       - if:
           condition:
             lambda: 'return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UNDEFINED;'
@@ -268,6 +277,9 @@ sensor:
     samples: 16
     filters:
       - multiply: 2.0
+      - sliding_window_moving_average:
+          window_size: 3
+          send_every: 1
     unit_of_measurement: "V"
     accuracy_decimals: 2
     on_value:
