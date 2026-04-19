@@ -243,7 +243,7 @@ script:
       - delay: 3s
       - if:
           condition:
-            binary_sensor.is_on: maintenance_mode
+            lambda: 'return id(maintenance_active);'
           then:
             - logger.log: "Maintenance mode aktiv – deep sleep forhindret (OTA klar)"
           else:
