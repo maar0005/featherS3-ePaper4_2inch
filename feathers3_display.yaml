@@ -70,10 +70,13 @@ wifi:
   on_disconnect:
     - logger.log: "WiFi mistet forbindelsen"
 
-captive_portal:
-
+# captive_portal is intentionally omitted: on the esp-idf framework it shares
+# port 80 with web_server via WebServerBase and reliably prevents the main web
+# server from accepting connections, even in STA mode. See esphome/esphome
+# issues #11132 and #14856. The ap: fallback above still works for reprovisioning.
 web_server:
   port: 80
+  version: 3
 
 # api: bevares til OTA-opdateringer og tidssynkronisering (time: homeassistant kræver native API)
 api:
