@@ -5,16 +5,15 @@
 
 substitutions:
   # GPIO pin assignments
-  # FeatherS3 defaults shown. See README for ESP32-S3-WROOM-1 N16R8 pin guide.
+  # ESP32-S3-DevKitC-1 N16R8 defaults shown. See README for FeatherS3 pinout.
   pin_spi_mosi:    "GPIO11"   # ePaper DIN
   pin_spi_sck:     "GPIO12"   # ePaper CLK
   pin_epaper_cs:   "GPIO10"   # ePaper CS
-  pin_epaper_dc:   "GPIO5"    # ePaper DC
-  pin_epaper_rst:  "GPIO14"   # ePaper RST
-  pin_epaper_busy: "GPIO6"    # ePaper BUSY
+  pin_epaper_dc:   "GPIO6"    # ePaper DC
+  pin_epaper_rst:  "GPIO5"    # ePaper RST
+  pin_epaper_busy: "GPIO4"    # ePaper BUSY
   pin_battery:     "GPIO2"    # Battery voltage ADC — must be an ADC1 pin
-  pin_ldo2:        "GPIO39"   # LDO2 enable — cuts display power during sleep
-  pin_maintenance: "GPIO3"    # Maintenance mode (bridge to GND = stay awake for OTA)
+  pin_maintenance: "GPIO3"    # Maintenance mode (bridge to GND on fresh boot = OTA mode)
   pin_wakeup:      "GPIO0"    # Deep-sleep wake-up pin (BOOT button)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -22,18 +21,32 @@ esphome:
   name: entre-display
   friendly_name: Entre Display
   on_boot:
-    - priority: 600      # LDO2 tændes tidligst muligt
+    - priority: 600
       then:
-        - output.turn_on: ldo2_enable
-    - priority: -100     # Kør script efter alle komponenter (inkl. WiFi) er initialiseret
+        - lambda: |-
+            // Latch maintenance mode: only active on a fresh boot (not deep-sleep wake)
+            // with GPIO3 pulled LOW. Configure pin before binary_sensor initialises.
+            gpio_reset_pin(GPIO_NUM_3);
+            gpio_set_direction(GPIO_NUM_3, GPIO_MODE_INPUT);
+            gpio_set_pull_mode(GPIO_NUM_3, GPIO_PULLUP_ONLY);
+            esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+            if (cause == ESP_SLEEP_WAKEUP_UNDEFINED && gpio_get_level(GPIO_NUM_3) == 0) {
+              id(maintenance_active) = true;
+              ESP_LOGI("boot", "Maintenance mode aktiveret (fresh boot + GPIO3 LOW)");
+            }
+    - priority: -100
       then:
         - script.execute: update_and_sleep
 
 esp32:
-  board: um_feathers3
+  board: esp32-s3-devkitc-1
   variant: esp32s3
   framework:
     type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESPTOOLPY_FLASHSIZE_16MB: "y"
+      CONFIG_SPIRAM_MODE_OCT: "y"
+      CONFIG_SPIRAM_SPEED_80M: "y"
 
 logger:
   level: DEBUG
@@ -49,10 +62,15 @@ wifi:
   password: !secret wifi_password
   power_save_mode: none
   fast_connect: true
+  ap:
+    ssid: "Entre-Display Setup"
+    password: "display123"
   on_connect:
     - logger.log: "WiFi forbundet!"
   on_disconnect:
     - logger.log: "WiFi mistet forbindelsen"
+
+captive_portal:
 
 # api: bevares til OTA-opdateringer og tidssynkronisering (time: homeassistant kræver native API)
 api:
@@ -65,6 +83,10 @@ ota:
 # ---------- Globals ----------
 globals:
   - id: data_received
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: maintenance_active
     type: bool
     restore_value: no
     initial_value: 'false'
@@ -92,17 +114,28 @@ time:
 # ---------- Deep Sleep ----------
 deep_sleep:
   id: deep_sleep_control
-  sleep_duration: 10min
+  sleep_duration: 30min
   wakeup_pin:
     number: ${pin_wakeup}
     inverted: true
+
+# ---------- Interval: opdater display hvert minut i OTA/maintenance mode ----------
+interval:
+  - interval: 60s
+    then:
+      - if:
+          condition:
+            lambda: 'return id(maintenance_active);'
+          then:
+            - component.update: epaper
 
 # ---------- Script: vent på WiFi, pull data via REST, opdater display, sov ----------
 # Logik:
 #   1. Vent på WiFi (max 30s)
 #   2. Send HTTP POST til HA og sæt data_received=true ved success
-#   3. Vent til data_received=true – eller max 60s total fra start
-#   4. Opdater display og sov
+#   3. Vent til data_received=true – eller max 30s
+#   4. Opdater display
+#   5. Vent på BUSY=LOW (display refresh færdig), sov derefter
 script:
   - id: update_and_sleep
     then:
@@ -182,8 +215,10 @@ script:
           else:
             - logger.log: "WiFi timeout – opdaterer display uden friske data"
       - component.update: epaper
-      - delay: 10s        # Waveshare 4.2" bruger 4-6s på fuldt refresh
-      - output.turn_off: ldo2_enable
+      - wait_until:
+          condition:
+            lambda: 'return gpio_get_level(GPIO_NUM_4) == 0;'
+          timeout: 15s
       - if:
           condition:
             binary_sensor.is_on: maintenance_mode
@@ -203,12 +238,6 @@ binary_sensor:
     name: "Maintenance Mode"
     internal: true
 
-# ---------- LDO2 enable (GPIO39 → 3V3_SW → display VCC) ----------
-output:
-  - platform: gpio
-    pin: ${pin_ldo2}
-    id: ldo2_enable
-
 # ---------- Battery -------------------------------------------------------
 sensor:
   - platform: adc
@@ -217,9 +246,9 @@ sensor:
     name: "Battery Voltage"
     update_interval: 30s
     attenuation: 12db
-    samples: 16                 # Oversampling: 16 hardware readings averaged per update (mitigates ADC jitter + WiFi sag)
+    samples: 16
     filters:
-      - multiply: 1.4545        # External 100kΩ/220kΩ divider compensation: (100+220)/220 = 1.4545
+      - multiply: 2.0
     unit_of_measurement: "V"
     accuracy_decimals: 2
 
@@ -256,6 +285,11 @@ sensor:
 # ---------- Text sensors (udfyldes via publish_state() i HTTP on_response-lambdaen) ----------
 # Al formatering og sprogtilpasning sker i HA – se HA_config_epaper.yaml.
 text_sensor:
+  - platform: wifi_info
+    ip_address:
+      id: wifi_ip
+      internal: true
+
   - platform: template
     id: display_date
     internal: true
@@ -398,10 +432,22 @@ display:
     lambda: |-
       const int W = 400;
       const int H = 300;
-      const int M = 8;  // margin
+      const int M = 8;
 
-      Color BG = COLOR_OFF;  // hvid baggrund
-      Color FG = COLOR_ON;   // sort tekst
+      Color BG = COLOR_OFF;
+      Color FG = COLOR_ON;
+
+      // ── OTA / Maintenance mode skærm ──────────────────
+      if (id(maintenance_active)) {
+        it.fill(BG);
+        it.print(M, 10,  id(font_large),  FG, "VEDLIGEHOLDELSE");
+        it.print(M, 50,  id(font_medium), FG, "OTA MODE AKTIV");
+        std::string ip = id(wifi_ip).state;
+        it.print(M, 90,  id(font_small),  FG, ip.empty() ? "Venter pa WiFi..." : ip.c_str());
+        it.print(M, 115, id(font_small),  FG, "Flash: esphome run --device <IP>");
+        it.rectangle(0, 0, W, H, FG);
+        return;
+      }
 
       it.fill(BG);
 
@@ -473,7 +519,7 @@ display:
       it.line(M, y, W - M, y, FG);
       y += 6;
 
-      // ── Alarm (left) + Battery % (right) ──────────────
+      // ── Alarm (venstre) + Batteri % (højre) ──────────
       std::string alarm_s = id(display_alarm).state;
       if (!alarm_s.empty() && alarm_s != "unavailable")
         it.print(M, y, id(font_small), FG, alarm_s.c_str());
