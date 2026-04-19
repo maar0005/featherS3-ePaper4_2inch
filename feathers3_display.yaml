@@ -432,15 +432,15 @@ font:
   - file: "fonts/Roboto-Bold.ttf"
     id: font_large
     size: 24
-    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆæØøÅå0123456789 .,:;-/°%!?–"
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆæØøÅåéèêàâùû0123456789 .,:;-/°%!?–()"
   - file: "fonts/Roboto-Regular.ttf"
     id: font_medium
     size: 18
-    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆæØøÅå0123456789 .,:;-/°%!•?–()"
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆæØøÅåéèêàâùû0123456789 .,:;-/°%!•?–()"
   - file: "fonts/Roboto-Regular.ttf"
     id: font_small
     size: 14
-    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆæØøÅå0123456789 .,:;-/°%!•?–()"
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆæØøÅåéèêàâùû0123456789 .,:;-/°%!•?–()"
 
 # ---------- SPI ----------
 spi:
@@ -473,7 +473,7 @@ display:
         it.print(M, 50,  id(font_medium), FG, "OTA MODE AKTIV");
         std::string ip = id(wifi_ip).state;
         it.print(M, 90,  id(font_small),  FG, ip.empty() ? "Venter pa WiFi..." : ip.c_str());
-        it.print(M, 115, id(font_small),  FG, "Flash: esphome run --device <IP>");
+        it.print(M, 115, id(font_small),  FG, "Flash: esphome run --device (IP)");
         it.rectangle(0, 0, W, H, FG);
         return;
       }
