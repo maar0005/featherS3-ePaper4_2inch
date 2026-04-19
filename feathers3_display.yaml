@@ -159,53 +159,76 @@ script:
   # Bruges af både opstartsflowet og maintenance-intervallet.
   - id: read_adc_to
     parameters:
-      target: int  # 1 = battery_v_1, 2 = battery_v_2
+      target: int  # 1 = battery_v_1 (rested OCV), 2 = battery_v_2 (under load)
     then:
       - component.update: battery_voltage
       - delay: 500ms
       - lambda: |-
-          float v = id(battery_voltage).state;
-          if (isnan(v)) {
+          // .state er post-filter (efter multiply + calibrate_linear).
+          // .raw_state er post-multiply, FØR calibrate_linear – vores rå udlæsning.
+          // Log begge: brug raw_state-værdien sammen med multimeter-måling for at
+          // udfylde calibrate_linear-parrene i sensor-blokken.
+          float v_cal = id(battery_voltage).state;
+          float v_raw = id(battery_voltage).raw_state;
+          if (isnan(v_cal)) {
             ESP_LOGW("battery", "ADC #%d: ingen aflaesning", target);
             return;
           }
-          if (target == 1) id(battery_v_1) = v;
-          else             id(battery_v_2) = v;
-          ESP_LOGI("battery", "ADC #%d: %.3f V", target, v);
+          if (target == 1) id(battery_v_1) = v_cal;
+          else             id(battery_v_2) = v_cal;
+          ESP_LOGI("battery", "ADC #%d: cal=%.4f V  raw=%.4f V  <-- maal multimeter nu",
+                   target, v_cal, v_raw);
 
-  # Beregn gennemsnit af de to ADC-aflæsninger og publicér battery_percent.
+  # Publicér battery_percent fra battery_v_1 (rested OCV efter deep sleep).
+  # battery_v_2 (under load) bruges KUN til at logge spændingsfald (sag).
+  # Hvis kun én måling er tilgængelig, fall-back til den.
   - id: publish_battery_percent_from_avg
     then:
       - lambda: |-
-          float v1 = id(battery_v_1);
-          float v2 = id(battery_v_2);
-          float avg;
-          if (!isnan(v1) && !isnan(v2)) avg = (v1 + v2) * 0.5f;
-          else if (!isnan(v1))          avg = v1;
-          else if (!isnan(v2))          avg = v2;
+          float v1 = id(battery_v_1);  // rested OCV – brug til SoC
+          float v2 = id(battery_v_2);  // loaded – kun til diagnostik
+
+          if (!isnan(v1) && !isnan(v2)) {
+            float sag = v1 - v2;
+            ESP_LOGI("battery", "Sag: %.3f V (v1=%.3f rested, v2=%.3f loaded)", sag, v1, v2);
+          }
+
+          float v_ocv;
+          if      (!isnan(v1)) v_ocv = v1;
+          else if (!isnan(v2)) v_ocv = v2;  // sidste udvej – vil undervurdere SoC
           else {
             ESP_LOGW("battery", "Ingen ADC-aflaesninger – batteri-status droppet");
             return;
           }
-          ESP_LOGI("battery", "ADC gennemsnit: %.3f V", avg);
 
-          // Li-ion S-curve LUT (piecewise linear).
-          float x = avg;
+          // ── OCV → SoC LUT for NMC 18650, lav load (Cadex/Battery University) ──
+          // Rediger tabellen, hvis du karakteriserer din egen celle. SOC er %.
+          // Punkterne SKAL være sorteret faldende efter spænding.
+          static const struct { float v; float soc; } LUT[] = {
+            {4.20f, 100.0f}, {4.15f,  95.0f}, {4.10f,  90.0f}, {4.05f,  85.0f},
+            {4.00f,  78.0f}, {3.95f,  70.0f}, {3.90f,  60.0f}, {3.85f,  50.0f},
+            {3.80f,  40.0f}, {3.75f,  30.0f}, {3.70f,  22.0f}, {3.65f,  15.0f},
+            {3.60f,  10.0f}, {3.55f,   7.0f}, {3.50f,   5.0f}, {3.40f,   3.0f},
+            {3.30f,   1.0f}, {3.20f,   0.0f},
+          };
+          const int N = sizeof(LUT) / sizeof(LUT[0]);
+
           float bp;
-          if      (x >= 4.20f) bp = 100.0f;
-          else if (x >= 4.10f) bp = 90.0f + (x - 4.10f) / 0.10f * 10.0f;
-          else if (x >= 4.00f) bp = 80.0f + (x - 4.00f) / 0.10f * 10.0f;
-          else if (x >= 3.90f) bp = 70.0f + (x - 3.90f) / 0.10f * 10.0f;
-          else if (x >= 3.80f) bp = 60.0f + (x - 3.80f) / 0.10f * 10.0f;
-          else if (x >= 3.70f) bp = 50.0f + (x - 3.70f) / 0.10f * 10.0f;
-          else if (x >= 3.60f) bp = 40.0f + (x - 3.60f) / 0.10f * 10.0f;
-          else if (x >= 3.50f) bp = 30.0f + (x - 3.50f) / 0.10f * 10.0f;
-          else if (x >= 3.40f) bp = 20.0f + (x - 3.40f) / 0.10f * 10.0f;
-          else if (x >= 3.30f) bp = 10.0f + (x - 3.30f) / 0.10f * 10.0f;
-          else if (x >= 3.20f) bp =  5.0f + (x - 3.20f) / 0.10f *  5.0f;
-          else if (x >= 3.10f) bp =  2.0f + (x - 3.10f) / 0.10f *  3.0f;
-          else if (x >= 3.00f) bp =  0.0f + (x - 3.00f) / 0.10f *  2.0f;
-          else                 bp =  0.0f;
+          if (v_ocv >= LUT[0].v) {
+            bp = LUT[0].soc;                    // klamp øverst
+          } else if (v_ocv <= LUT[N-1].v) {
+            bp = LUT[N-1].soc;                  // klamp nederst
+          } else {
+            // Find bracket og lineær interpolation.
+            for (int i = 0; i < N - 1; i++) {
+              if (v_ocv <= LUT[i].v && v_ocv >= LUT[i+1].v) {
+                float frac = (v_ocv - LUT[i+1].v) / (LUT[i].v - LUT[i+1].v);
+                bp = LUT[i+1].soc + frac * (LUT[i].soc - LUT[i+1].soc);
+                break;
+              }
+            }
+          }
+          ESP_LOGI("battery", "OCV %.3f V -> SoC %.1f %%", v_ocv, bp);
           id(battery_percent).publish_state(bp);
 
   # Wrapper: 2 ADC-målinger + gennemsnit. Bruges af maintenance-intervallet
@@ -366,14 +389,22 @@ sensor:
     id: battery_voltage
     name: "Battery Voltage"
     # Manuelt trigget af scriptet (read_adc_to). battery_percent beregnes
-    # som gennemsnit af to målinger – se publish_battery_percent_from_avg.
+    # ud fra battery_v_1 (rested OCV efter deep sleep) i publish_battery_percent_from_avg.
     update_interval: never
     attenuation: 12db
-    samples: 16
+    samples: 32
     filters:
-      - multiply: 2.0
+      - multiply: 2.0  # GPIO2 har en 1:2 spændingsdeler på FeatherS3
+      # ── ADC-kalibrering ──────────────────────────────────────────────
+      # Erstat parrene med dine egne målinger:
+      #   <ESP-rapporteret V (efter multiply)> -> <multimeter V på battery-terminaler>
+      # Mindst 2 punkter (ét nær 4.2V, ét nær 3.3V). Flere punkter = least-squares fit.
+      # Default herunder er identitet (ingen korrektion) – ingen effekt før du skifter.
+      - calibrate_linear:
+          - 0.000 -> 0.000
+          - 4.200 -> 4.200
     unit_of_measurement: "V"
-    accuracy_decimals: 2
+    accuracy_decimals: 3
 
   - platform: template
     id: battery_percent
