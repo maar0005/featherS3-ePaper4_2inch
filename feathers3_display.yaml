@@ -96,6 +96,14 @@ globals:
     type: bool
     restore_value: no
     initial_value: 'false'
+  - id: battery_v_1
+    type: float
+    restore_value: no
+    initial_value: 'NAN'
+  - id: battery_v_2
+    type: float
+    restore_value: no
+    initial_value: 'NAN'
 
 # ---------- HTTP Request (pull-model) ----------
 # Tilføj følgende til secrets.yaml:
@@ -132,20 +140,107 @@ interval:
           condition:
             lambda: 'return id(maintenance_active);'
           then:
+            - script.execute: measure_battery_and_publish
+            - script.wait: measure_battery_and_publish
             - component.update: epaper
 
 # ---------- Script: vent på WiFi, pull data via REST, opdater display, sov ----------
 # Logik:
-#   1. Vent på WiFi (max 30s)
-#   2. Send HTTP POST til HA og sæt data_received=true ved success
-#   3. Vent til data_received=true – eller max 30s
-#   4. Opdater display
-#   5. Vent på BUSY=LOW (display refresh færdig), sov derefter
+#   1. ADC måling #1 (med det samme – før WiFi)
+#   2. Vent på WiFi (max 30s)
+#   3. Send HTTP POST til HA og sæt data_received=true ved success
+#   4. Vent til data_received=true – eller max 30s
+#   5. ADC måling #2 og publicér gennemsnit som battery_percent
+#   6. Opdater display (én gang)
+#   7. Vent på BUSY=LOW (display refresh færdig)
+#   8. 3 sekunders pause, så panelet sætter sig før deep sleep
 script:
+  # Helper: enkelt ADC-aflæsning, gemmer rå spænding i target-globalen.
+  # Bruges af både opstartsflowet og maintenance-intervallet.
+  - id: read_adc_to
+    parameters:
+      target: int  # 1 = battery_v_1, 2 = battery_v_2
+    then:
+      - component.update: battery_voltage
+      - delay: 500ms
+      - lambda: |-
+          float v = id(battery_voltage).state;
+          if (isnan(v)) {
+            ESP_LOGW("battery", "ADC #%d: ingen aflaesning", target);
+            return;
+          }
+          if (target == 1) id(battery_v_1) = v;
+          else             id(battery_v_2) = v;
+          ESP_LOGI("battery", "ADC #%d: %.3f V", target, v);
+
+  # Beregn gennemsnit af de to ADC-aflæsninger og publicér battery_percent.
+  - id: publish_battery_percent_from_avg
+    then:
+      - lambda: |-
+          float v1 = id(battery_v_1);
+          float v2 = id(battery_v_2);
+          float avg;
+          if (!isnan(v1) && !isnan(v2)) avg = (v1 + v2) * 0.5f;
+          else if (!isnan(v1))          avg = v1;
+          else if (!isnan(v2))          avg = v2;
+          else {
+            ESP_LOGW("battery", "Ingen ADC-aflaesninger – batteri-status droppet");
+            return;
+          }
+          ESP_LOGI("battery", "ADC gennemsnit: %.3f V", avg);
+
+          // Li-ion S-curve LUT (piecewise linear).
+          float x = avg;
+          float bp;
+          if      (x >= 4.20f) bp = 100.0f;
+          else if (x >= 4.10f) bp = 90.0f + (x - 4.10f) / 0.10f * 10.0f;
+          else if (x >= 4.00f) bp = 80.0f + (x - 4.00f) / 0.10f * 10.0f;
+          else if (x >= 3.90f) bp = 70.0f + (x - 3.90f) / 0.10f * 10.0f;
+          else if (x >= 3.80f) bp = 60.0f + (x - 3.80f) / 0.10f * 10.0f;
+          else if (x >= 3.70f) bp = 50.0f + (x - 3.70f) / 0.10f * 10.0f;
+          else if (x >= 3.60f) bp = 40.0f + (x - 3.60f) / 0.10f * 10.0f;
+          else if (x >= 3.50f) bp = 30.0f + (x - 3.50f) / 0.10f * 10.0f;
+          else if (x >= 3.40f) bp = 20.0f + (x - 3.40f) / 0.10f * 10.0f;
+          else if (x >= 3.30f) bp = 10.0f + (x - 3.30f) / 0.10f * 10.0f;
+          else if (x >= 3.20f) bp =  5.0f + (x - 3.20f) / 0.10f *  5.0f;
+          else if (x >= 3.10f) bp =  2.0f + (x - 3.10f) / 0.10f *  3.0f;
+          else if (x >= 3.00f) bp =  0.0f + (x - 3.00f) / 0.10f *  2.0f;
+          else                 bp =  0.0f;
+          id(battery_percent).publish_state(bp);
+
+  # Wrapper: 2 ADC-målinger + gennemsnit. Bruges af maintenance-intervallet
+  # som ikke har det fulde wake-flow imellem målingerne.
+  - id: measure_battery_and_publish
+    then:
+      - lambda: |-
+          id(battery_v_1) = NAN;
+          id(battery_v_2) = NAN;
+      - script.execute:
+          id: read_adc_to
+          target: 1
+      - script.wait: read_adc_to
+      - script.execute:
+          id: read_adc_to
+          target: 2
+      - script.wait: read_adc_to
+      - script.execute: publish_battery_percent_from_avg
+      - script.wait: publish_battery_percent_from_avg
+
   - id: update_and_sleep
     then:
       - deep_sleep.prevent: deep_sleep_control
-      - lambda: 'id(data_received) = false;'
+      - lambda: |-
+          id(data_received) = false;
+          id(battery_v_1) = NAN;
+          id(battery_v_2) = NAN;
+
+      # ── 1) ADC måling #1 — det første der sker efter boot ────────────
+      - script.execute:
+          id: read_adc_to
+          target: 1
+      - script.wait: read_adc_to
+
+      # ── 2) Vent på WiFi ──────────────────────────────────────────────
       - wait_until:
           condition:
             wifi.connected:
@@ -219,30 +314,25 @@ script:
                   - logger.log: "✗ Ingen data fra HA (timeout/fejl) – opdaterer display med gamle værdier"
           else:
             - logger.log: "WiFi timeout – opdaterer display uden friske data"
-      - repeat:
-          count: 3
-          then:
-            - component.update: battery_voltage
-            - delay: 1s
-      - wait_until:
-          condition:
-            lambda: 'return !isnan(id(battery_percent).state);'
-          timeout: 10s
-      - if:
-          condition:
-            lambda: 'return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UNDEFINED;'
-          then:
-            - component.update: epaper
-            - wait_until:
-                condition:
-                  lambda: 'return gpio_get_level(GPIO_NUM_4) == 0;'
-                timeout: 15s
-            - delay: 1s
+
+      # ── 5) ADC måling #2 + publicér gennemsnit som battery_percent ──
+      - script.execute:
+          id: read_adc_to
+          target: 2
+      - script.wait: read_adc_to
+      - script.execute: publish_battery_percent_from_avg
+      - script.wait: publish_battery_percent_from_avg
+
+      # ── 6) Display refresh (én gang) ────────────────────────────────
       - component.update: epaper
+
+      # ── 7) Vent til ePaper er færdig (BUSY=LOW, op til 20s) ─────────
       - wait_until:
           condition:
             lambda: 'return gpio_get_level(GPIO_NUM_4) == 0;'
-          timeout: 15s
+          timeout: 20s
+
+      # ── 8) Ekstra 3 sekunder så panelet sætter sig før deep sleep ───
       - delay: 3s
       - if:
           condition:
@@ -275,36 +365,15 @@ sensor:
     pin: ${pin_battery}
     id: battery_voltage
     name: "Battery Voltage"
-    update_interval: 30s
+    # Manuelt trigget af scriptet (read_adc_to). battery_percent beregnes
+    # som gennemsnit af to målinger – se publish_battery_percent_from_avg.
+    update_interval: never
     attenuation: 12db
     samples: 16
     filters:
       - multiply: 2.0
-      - sliding_window_moving_average:
-          window_size: 3
-          send_every: 1
     unit_of_measurement: "V"
     accuracy_decimals: 2
-    on_value:
-      - lambda: |-
-          // Publish battery_percent immediately when ADC gets a reading.
-          // Li-ion S-curve LUT (piecewise linear). x = compensated voltage.
-          float bp;
-          if      (x >= 4.20f) bp = 100.0f;
-          else if (x >= 4.10f) bp = 90.0f + (x - 4.10f) / 0.10f * 10.0f;
-          else if (x >= 4.00f) bp = 80.0f + (x - 4.00f) / 0.10f * 10.0f;
-          else if (x >= 3.90f) bp = 70.0f + (x - 3.90f) / 0.10f * 10.0f;
-          else if (x >= 3.80f) bp = 60.0f + (x - 3.80f) / 0.10f * 10.0f;
-          else if (x >= 3.70f) bp = 50.0f + (x - 3.70f) / 0.10f * 10.0f;
-          else if (x >= 3.60f) bp = 40.0f + (x - 3.60f) / 0.10f * 10.0f;
-          else if (x >= 3.50f) bp = 30.0f + (x - 3.50f) / 0.10f * 10.0f;
-          else if (x >= 3.40f) bp = 20.0f + (x - 3.40f) / 0.10f * 10.0f;
-          else if (x >= 3.30f) bp = 10.0f + (x - 3.30f) / 0.10f * 10.0f;
-          else if (x >= 3.20f) bp =  5.0f + (x - 3.20f) / 0.10f *  5.0f;
-          else if (x >= 3.10f) bp =  2.0f + (x - 3.10f) / 0.10f *  3.0f;
-          else if (x >= 3.00f) bp =  0.0f + (x - 3.00f) / 0.10f *  2.0f;
-          else                 bp =  0.0f;
-          id(battery_percent).publish_state(bp);
 
   - platform: template
     id: battery_percent
