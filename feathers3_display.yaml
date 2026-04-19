@@ -270,6 +270,26 @@ sensor:
       - multiply: 2.0
     unit_of_measurement: "V"
     accuracy_decimals: 2
+    on_value:
+      - lambda: |-
+          // Publish battery_percent immediately when ADC gets a reading.
+          // Li-ion S-curve LUT (piecewise linear). x = compensated voltage.
+          float bp;
+          if      (x >= 4.20f) bp = 100.0f;
+          else if (x >= 4.10f) bp = 90.0f + (x - 4.10f) / 0.10f * 10.0f;
+          else if (x >= 4.00f) bp = 80.0f + (x - 4.00f) / 0.10f * 10.0f;
+          else if (x >= 3.90f) bp = 70.0f + (x - 3.90f) / 0.10f * 10.0f;
+          else if (x >= 3.80f) bp = 60.0f + (x - 3.80f) / 0.10f * 10.0f;
+          else if (x >= 3.70f) bp = 50.0f + (x - 3.70f) / 0.10f * 10.0f;
+          else if (x >= 3.60f) bp = 40.0f + (x - 3.60f) / 0.10f * 10.0f;
+          else if (x >= 3.50f) bp = 30.0f + (x - 3.50f) / 0.10f * 10.0f;
+          else if (x >= 3.40f) bp = 20.0f + (x - 3.40f) / 0.10f * 10.0f;
+          else if (x >= 3.30f) bp = 10.0f + (x - 3.30f) / 0.10f * 10.0f;
+          else if (x >= 3.20f) bp =  5.0f + (x - 3.20f) / 0.10f *  5.0f;
+          else if (x >= 3.10f) bp =  2.0f + (x - 3.10f) / 0.10f *  3.0f;
+          else if (x >= 3.00f) bp =  0.0f + (x - 3.00f) / 0.10f *  2.0f;
+          else                 bp =  0.0f;
+          id(battery_percent).publish_state(bp);
 
   - platform: template
     id: battery_percent
@@ -277,29 +297,7 @@ sensor:
     unit_of_measurement: "%"
     accuracy_decimals: 0
     icon: "mdi:battery"
-    update_interval: 30s
-    lambda: |-
-      // Non-linear Li-ion discharge LUT (piecewise linear interpolation).
-      // 18650 S-curve breakpoints:
-      //   4.20V=100%  4.10V=90%  4.00V=80%  3.90V=70%  3.80V=60%
-      //   3.70V=50%   3.60V=40%  3.50V=30%  3.40V=20%  3.30V=10%
-      //   3.20V=5%    3.10V=2%   3.00V=0%
-      float v = id(battery_voltage).state;
-      if (isnan(v)) return {};
-      if (v >= 4.20f) return 100.0f;
-      if (v >= 4.10f) return 90.0f + (v - 4.10f) / 0.10f * 10.0f;
-      if (v >= 4.00f) return 80.0f + (v - 4.00f) / 0.10f * 10.0f;
-      if (v >= 3.90f) return 70.0f + (v - 3.90f) / 0.10f * 10.0f;
-      if (v >= 3.80f) return 60.0f + (v - 3.80f) / 0.10f * 10.0f;
-      if (v >= 3.70f) return 50.0f + (v - 3.70f) / 0.10f * 10.0f;
-      if (v >= 3.60f) return 40.0f + (v - 3.60f) / 0.10f * 10.0f;
-      if (v >= 3.50f) return 30.0f + (v - 3.50f) / 0.10f * 10.0f;
-      if (v >= 3.40f) return 20.0f + (v - 3.40f) / 0.10f * 10.0f;
-      if (v >= 3.30f) return 10.0f + (v - 3.30f) / 0.10f * 10.0f;
-      if (v >= 3.20f) return  5.0f + (v - 3.20f) / 0.10f *  5.0f;
-      if (v >= 3.10f) return  2.0f + (v - 3.10f) / 0.10f *  3.0f;
-      if (v >= 3.00f) return  0.0f + (v - 3.00f) / 0.10f *  2.0f;
-      return 0.0f;
+    update_interval: never
 
 # ---------- Text sensors (udfyldes via publish_state() i HTTP on_response-lambdaen) ----------
 # Al formatering og sprogtilpasning sker i HA – se HA_config_epaper.yaml.
