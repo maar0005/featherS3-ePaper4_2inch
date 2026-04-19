@@ -213,6 +213,16 @@ script:
                   - logger.log: "✗ Ingen data fra HA (timeout/fejl) – opdaterer display med gamle værdier"
           else:
             - logger.log: "WiFi timeout – opdaterer display uden friske data"
+      - if:
+          condition:
+            lambda: 'return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UNDEFINED;'
+          then:
+            - component.update: epaper
+            - wait_until:
+                condition:
+                  lambda: 'return gpio_get_level(GPIO_NUM_4) == 0;'
+                timeout: 15s
+            - delay: 1s
       - component.update: epaper
       - wait_until:
           condition:
