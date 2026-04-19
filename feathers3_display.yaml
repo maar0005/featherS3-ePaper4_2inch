@@ -218,6 +218,7 @@ script:
           condition:
             lambda: 'return gpio_get_level(GPIO_NUM_4) == 0;'
           timeout: 15s
+      - delay: 3s
       - if:
           condition:
             binary_sensor.is_on: maintenance_mode
