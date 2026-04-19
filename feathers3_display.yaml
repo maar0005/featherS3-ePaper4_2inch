@@ -355,8 +355,8 @@ script:
             lambda: 'return gpio_get_level(GPIO_NUM_4) == 0;'
           timeout: 20s
 
-      # ── 8) Ekstra 3 sekunder så panelet sætter sig før deep sleep ───
-      - delay: 3s
+      # ── 8) Ekstra 5 sekunder så panelet sætter sig før deep sleep ───
+      - delay: 5s
       - if:
           condition:
             lambda: 'return id(maintenance_active);'
@@ -620,6 +620,10 @@ display:
       y += 6;
 
       // ── Kalender ──────────────────────────────────────
+      // Reserver plads til footer (alarm + batteri) nederst, så den altid er synlig.
+      const int FOOTER_H = 24;               // footer total højde (linje + tekst)
+      const int CAL_MAX_Y = H - FOOTER_H - 6; // sidste y hvor en kalender-linje må starte
+
       std::string hdr = id(cal_header).state;
       if (!hdr.empty() && hdr != "unavailable")
         it.print(M, y, id(font_medium), FG, hdr.c_str());
@@ -633,7 +637,7 @@ display:
         id(cal_event_9).state,  id(cal_event_10).state,
       };
       int vis = 0;
-      for (int i = 0; i < 10 && y < H - 28; i++) {
+      for (int i = 0; i < 10 && y < CAL_MAX_Y; i++) {
         if (cal_events[i].empty() || cal_events[i] == "unavailable") continue;
         char linje[64];
         snprintf(linje, sizeof(linje), "• %.60s", cal_events[i].c_str());
@@ -644,23 +648,28 @@ display:
       if (vis == 0) {
         std::string no_ev = id(no_events_msg).state;
         it.print(M, y, id(font_small), FG, no_ev.empty() ? "..." : no_ev.c_str());
-        y += 17;
       }
 
-      y += 4;
-      it.line(M, y, W - M, y, FG);
-      y += 6;
+      // ── Footer: alarm (venstre) + batteri % (højre) ──────────
+      // Fast placering nederst så den aldrig klippes af kalender-overløb.
+      int footer_y = H - FOOTER_H + 4;       // giver ~14px til font_small
+      int line_y   = H - FOOTER_H - 2;       // skillelinje lige over footer
+      it.line(M, line_y, W - M, line_y, FG);
 
-      // ── Alarm (venstre) + Batteri % (højre) ──────────
       std::string alarm_s = id(display_alarm).state;
       if (!alarm_s.empty() && alarm_s != "unavailable")
-        it.print(M, y, id(font_small), FG, alarm_s.c_str());
+        it.print(M, footer_y, id(font_small), FG, alarm_s.c_str());
 
+      // Vis altid batteri-feltet: "--%" hvis publish_battery_percent_from_avg
+      // ikke kørte (begge ADC-maalinger NaN) -- så vi kan skelne layout-fejl
+      // fra maaling-fejl paa skærmen.
+      char bat_str[16];
       if (!isnan(id(battery_percent).state)) {
-        char bat_str[12];
         snprintf(bat_str, sizeof(bat_str), "Bat: %d%%", (int)id(battery_percent).state);
-        it.print(W - M, y, id(font_small), FG, TextAlign::TOP_RIGHT, bat_str);
+      } else {
+        snprintf(bat_str, sizeof(bat_str), "Bat: --%%");
       }
+      it.print(W - M, footer_y, id(font_small), FG, TextAlign::TOP_RIGHT, bat_str);
 
       // ── Ramme ─────────────────────────────────────────
       it.rectangle(0, 0, W, H, FG);
