@@ -5,35 +5,47 @@
 
 substitutions:
   # GPIO pin assignments
-  # FeatherS3 defaults shown. See README for ESP32-S3-WROOM-1 N16R8 pin guide.
+  # ESP32-S3-DevKitC-1 N16R8 defaults shown. See README for FeatherS3 pinout.
   pin_spi_mosi:    "GPIO11"   # ePaper DIN
   pin_spi_sck:     "GPIO12"   # ePaper CLK
   pin_epaper_cs:   "GPIO10"   # ePaper CS
-  pin_epaper_dc:   "GPIO5"    # ePaper DC
-  pin_epaper_rst:  "GPIO14"   # ePaper RST
-  pin_epaper_busy: "GPIO6"    # ePaper BUSY
+  pin_epaper_dc:   "GPIO6"    # ePaper DC
+  pin_epaper_rst:  "GPIO5"    # ePaper RST
+  pin_epaper_busy: "GPIO4"    # ePaper BUSY
   pin_battery:     "GPIO2"    # Battery voltage ADC — must be an ADC1 pin
-  pin_ldo2:        "GPIO39"   # LDO2 enable — cuts display power during sleep
-  pin_maintenance: "GPIO3"    # Maintenance mode (bridge to GND = stay awake for OTA)
-  pin_wakeup:      "GPIO0"    # Deep-sleep wake-up pin (BOOT button)
+  pin_maintenance: "GPIO3"    # Maintenance/wake pin: press during sleep = early wake; hold on fresh boot = OTA mode
+  pin_wakeup:      "GPIO0"    # Additional wake pin (BOOT button) — also wakes from sleep
 
 # ─────────────────────────────────────────────────────────────────────────────
 esphome:
   name: entre-display
   friendly_name: Entre Display
   on_boot:
-    - priority: 600      # LDO2 tændes tidligst muligt
+    - priority: 600
       then:
-        - output.turn_on: ldo2_enable
-    - priority: -100     # Kør script efter alle komponenter (inkl. WiFi) er initialiseret
+        - lambda: |-
+            // Latch maintenance mode: only active on a fresh boot (not deep-sleep wake)
+            // with GPIO3 pulled LOW. We ONLY read the pin here — we do NOT reconfigure
+            // it, because the binary_sensor component below owns the pin configuration.
+            // gpio_reset_pin() would clobber that and cause flaky first-boot reads.
+            esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+            if (cause == ESP_SLEEP_WAKEUP_UNDEFINED && gpio_get_level(GPIO_NUM_3) == 0) {
+              id(maintenance_active) = true;
+              ESP_LOGI("boot", "Maintenance mode aktiveret (fresh boot + GPIO3 LOW)");
+            }
+    - priority: -100
       then:
         - script.execute: update_and_sleep
 
 esp32:
-  board: um_feathers3
+  board: esp32-s3-devkitc-1
   variant: esp32s3
   framework:
     type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESPTOOLPY_FLASHSIZE_16MB: "y"
+      CONFIG_SPIRAM_MODE_OCT: "y"
+      CONFIG_SPIRAM_SPEED_80M: "y"
 
 logger:
   level: DEBUG
@@ -49,10 +61,21 @@ wifi:
   password: !secret wifi_password
   power_save_mode: none
   fast_connect: true
+  ap:
+    ssid: "Entre-Display Setup"
+    password: "display123"
   on_connect:
     - logger.log: "WiFi forbundet!"
   on_disconnect:
     - logger.log: "WiFi mistet forbindelsen"
+
+# captive_portal is intentionally omitted: on the esp-idf framework it shares
+# port 80 with web_server via WebServerBase and reliably prevents the main web
+# server from accepting connections, even in STA mode. See esphome/esphome
+# issues #11132 and #14856. The ap: fallback above still works for reprovisioning.
+web_server:
+  port: 80
+  version: 3
 
 # api: bevares til OTA-opdateringer og tidssynkronisering (time: homeassistant kræver native API)
 api:
@@ -65,6 +88,34 @@ ota:
 # ---------- Globals ----------
 globals:
   - id: data_received
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: maintenance_active
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: battery_v_1
+    type: float
+    restore_value: no
+    initial_value: 'NAN'
+  - id: battery_v_2
+    type: float
+    restore_value: no
+    initial_value: 'NAN'
+  # FIX (bug 2): Display-lambdaen læste tidligere battery_percent.state,
+  # hvilket kunne race mod publish_state(). Vi skriver nu SoC til denne
+  # global umiddelbart før component.update: epaper, og display-lambdaen
+  # læser direkte herfra. Ingen publish/subscribe-timing i vejen.
+  - id: battery_pct_display
+    type: float
+    restore_value: no
+    initial_value: 'NAN'
+  # FIX (bug 2a): Flag sat af battery_voltage.on_value — bruges af
+  # read_adc_to i stedet for en fast 500ms delay, så vi venter præcis
+  # så længe ADC'en faktisk har brug for (kan være >500ms med samples
+  # og aktiv WiFi).
+  - id: adc_sample_ready
     type: bool
     restore_value: no
     initial_value: 'false'
@@ -92,26 +143,174 @@ time:
 # ---------- Deep Sleep ----------
 deep_sleep:
   id: deep_sleep_control
-  sleep_duration: 10min
-  wakeup_pin:
-    number: ${pin_wakeup}
-    inverted: true
+  sleep_duration: 30min
+  # Wakeup pins are configured manually in the script so both GPIO0 and GPIO3
+  # can be used. ESPHome's wakeup_pin: only supports one pin.
+
+# ---------- Interval: opdater display hvert minut i OTA/maintenance mode ----------
+interval:
+  - interval: 60s
+    then:
+      - if:
+          condition:
+            lambda: 'return id(maintenance_active);'
+          then:
+            - script.execute: measure_battery_and_publish
+            - script.wait: measure_battery_and_publish
+            - component.update: epaper
 
 # ---------- Script: vent på WiFi, pull data via REST, opdater display, sov ----------
 # Logik:
-#   1. Vent på WiFi (max 30s)
-#   2. Send HTTP POST til HA og sæt data_received=true ved success
-#   3. Vent til data_received=true – eller max 60s total fra start
-#   4. Opdater display og sov
+#   1. ADC måling #1 (med det samme – før WiFi)
+#   2. Vent på WiFi (max 30s)
+#   3. Send HTTP POST til HA og sæt data_received=true ved success
+#   4. Vent til data_received=true – eller max 30s
+#   5. ADC måling #2 og publicér gennemsnit som battery_percent
+#   6. Opdater display (én gang)
+#   7. Vent til ePaper er færdig via binary_sensor (non-blocking)
+#   8. Ekstra pause så panelet sætter sig før deep sleep
 script:
+  # Helper: enkelt ADC-aflæsning, gemmer rå spænding i target-globalen.
+  # Bruges af både opstartsflowet og maintenance-intervallet.
+  #
+  # FIX (bug 2a): Vi venter på battery_voltage.on_value-triggeren via en
+  # separat global flag i stedet for en fast 500ms delay. Med samples: 8
+  # (sænket fra 32) og WiFi aktivt kan en fuld sampling tage >500ms, hvilket
+  # gav NaN og "Bat: --%". Nu venter vi op til 3s på at ADC'en faktisk
+  # publicerer en værdi.
+  - id: read_adc_to
+    parameters:
+      target: int  # 1 = battery_v_1 (rested OCV), 2 = battery_v_2 (under load)
+    then:
+      - lambda: 'id(adc_sample_ready) = false;'
+      - component.update: battery_voltage
+      - wait_until:
+          condition:
+            lambda: 'return id(adc_sample_ready);'
+          timeout: 3s
+      - lambda: |-
+          // .state er post-filter (efter multiply + calibrate_linear).
+          // .raw_state er post-multiply, FØR calibrate_linear – vores rå udlæsning.
+          // Log begge: brug raw_state-værdien sammen med multimeter-måling for at
+          // udfylde calibrate_linear-parrene i sensor-blokken.
+          float v_cal = id(battery_voltage).state;
+          float v_raw = id(battery_voltage).raw_state;
+          if (isnan(v_cal)) {
+            ESP_LOGW("battery", "ADC #%d: ingen aflaesning (timeout)", target);
+            return;
+          }
+          if (target == 1) id(battery_v_1) = v_cal;
+          else             id(battery_v_2) = v_cal;
+          ESP_LOGI("battery", "ADC #%d: cal=%.4f V  raw=%.4f V  <-- maal multimeter nu",
+                   target, v_cal, v_raw);
+
+  # Publicér battery_percent fra battery_v_1 (rested OCV efter deep sleep).
+  # battery_v_2 (under load) bruges KUN til at logge spændingsfald (sag).
+  # Hvis kun én måling er tilgængelig, fall-back til den.
+  #
+  # FIX (bug 2b): Publicér ALTID noget — også NaN ved total fejl — så vi
+  # kan skelne "scriptet kørte ikke" fra "maaling fejlede" på skærmen,
+  # og så vi aldrig læser en gammel stale værdi fra et tidligere boot.
+  - id: publish_battery_percent_from_avg
+    then:
+      - lambda: |-
+          float v1 = id(battery_v_1);  // rested OCV – brug til SoC
+          float v2 = id(battery_v_2);  // loaded – kun til diagnostik
+
+          if (!isnan(v1) && !isnan(v2)) {
+            float sag = v1 - v2;
+            ESP_LOGI("battery", "Sag: %.3f V (v1=%.3f rested, v2=%.3f loaded)", sag, v1, v2);
+          }
+
+          float v_ocv;
+          if      (!isnan(v1)) v_ocv = v1;
+          else if (!isnan(v2)) v_ocv = v2;  // sidste udvej – vil undervurdere SoC
+          else {
+            ESP_LOGW("battery", "Ingen ADC-aflaesninger – publicerer NaN");
+            id(battery_percent).publish_state(NAN);
+            id(battery_pct_display) = NAN;
+            return;
+          }
+
+          // ── OCV → SoC LUT for NMC 18650, lav load (Cadex/Battery University) ──
+          // Rediger tabellen, hvis du karakteriserer din egen celle. SOC er %.
+          // Punkterne SKAL være sorteret faldende efter spænding.
+          static const struct { float v; float soc; } LUT[] = {
+            {4.20f, 100.0f}, {4.15f,  95.0f}, {4.10f,  90.0f}, {4.05f,  85.0f},
+            {4.00f,  78.0f}, {3.95f,  70.0f}, {3.90f,  60.0f}, {3.85f,  50.0f},
+            {3.80f,  40.0f}, {3.75f,  30.0f}, {3.70f,  22.0f}, {3.65f,  15.0f},
+            {3.60f,  10.0f}, {3.55f,   7.0f}, {3.50f,   5.0f}, {3.40f,   3.0f},
+            {3.30f,   1.0f}, {3.20f,   0.0f},
+          };
+          const int N = sizeof(LUT) / sizeof(LUT[0]);
+
+          float bp;
+          if (v_ocv >= LUT[0].v) {
+            bp = LUT[0].soc;                    // klamp øverst
+          } else if (v_ocv <= LUT[N-1].v) {
+            bp = LUT[N-1].soc;                  // klamp nederst
+          } else {
+            // Find bracket og lineær interpolation.
+            for (int i = 0; i < N - 1; i++) {
+              if (v_ocv <= LUT[i].v && v_ocv >= LUT[i+1].v) {
+                float frac = (v_ocv - LUT[i+1].v) / (LUT[i].v - LUT[i+1].v);
+                bp = LUT[i+1].soc + frac * (LUT[i].soc - LUT[i+1].soc);
+                break;
+              }
+            }
+          }
+          ESP_LOGI("battery", "OCV %.3f V -> SoC %.1f %%", v_ocv, bp);
+          id(battery_percent).publish_state(bp);
+          // FIX (bug 2): Skriv ALTID SoC direkte til en global som display-
+          // lambdaen læser. Eliminerer race mellem publish_state() og den
+          // efterfølgende component.update af displayet.
+          id(battery_pct_display) = bp;
+
+  # Wrapper: 2 ADC-målinger + gennemsnit. Bruges af maintenance-intervallet
+  # som ikke har det fulde wake-flow imellem målingerne.
+  - id: measure_battery_and_publish
+    then:
+      - lambda: |-
+          id(battery_v_1) = NAN;
+          id(battery_v_2) = NAN;
+      - script.execute:
+          id: read_adc_to
+          target: 1
+      - script.wait: read_adc_to
+      - script.execute:
+          id: read_adc_to
+          target: 2
+      - script.wait: read_adc_to
+      - script.execute: publish_battery_percent_from_avg
+      - script.wait: publish_battery_percent_from_avg
+
   - id: update_and_sleep
     then:
       - deep_sleep.prevent: deep_sleep_control
-      - lambda: 'id(data_received) = false;'
+      - lambda: |-
+          id(data_received) = false;
+          id(battery_v_1) = NAN;
+          id(battery_v_2) = NAN;
+          id(battery_pct_display) = NAN;
+
+      # ── 1) ADC måling #1 — det første der sker efter boot ────────────
+      - script.execute:
+          id: read_adc_to
+          target: 1
+      - script.wait: read_adc_to
+
+      # Vent så ADC-værdien er helt committeret gennem alle filtre
+      - delay: 1s
+
+      # ── 2) Vent på WiFi ──────────────────────────────────────────────
       - wait_until:
           condition:
             wifi.connected:
           timeout: 30s
+
+      # Lille pause efter WiFi-forbindelse så DNS/routing er klar
+      - delay: 2s
+
       - if:
           condition:
             wifi.connected:
@@ -181,33 +380,76 @@ script:
                   - logger.log: "✗ Ingen data fra HA (timeout/fejl) – opdaterer display med gamle værdier"
           else:
             - logger.log: "WiFi timeout – opdaterer display uden friske data"
+
+      # ── 3) Vent så alle publish_state() har sat text_sensors ─────────
+      # 18 text_sensors bliver publiceret i HTTP-callbackens lambda. Giv
+      # scheduleren tid til at behandle dem alle før display-lambdaen
+      # læser dem via .state.
+      - delay: 2s
+
+      # ── 4) Publicér batteri-% baseret på måling #1 (rested OCV) ─────
+      - script.execute: publish_battery_percent_from_avg
+      - script.wait: publish_battery_percent_from_avg
+
+      # Vent så battery_pct_display-globalen er stabilt sat
+      - delay: 1s
+
+      # ── 5) Display refresh ──────────────────────────────────────────
+      # component.update: epaper starter selve refresh-cyklussen.
+      # Waveshare 4.20in tager ~4-5s blokkerende inde i driverens
+      # display()-funktion, hvor den poller BUSY internt.
+      - logger.log: "Starter ePaper refresh..."
       - component.update: epaper
-      - delay: 10s        # Waveshare 4.2" bruger 4-6s på fuldt refresh
-      - output.turn_off: ldo2_enable
+
+      # ── 6) Vent på at panelet er helt færdig ─────────────────────────
+      # Selv om component.update er mestendels synkron, er der
+      # efterfølgende state-skift (deep sleep-kommando til panelet,
+      # power-off sekvens) som køres over de næste loop()-iterationer.
+      # Generøs delay sikrer at alt er fuldført før vi klipper strømmen.
+      - delay: 8s
+      - logger.log: "ePaper refresh færdig"
+
+      # ── 7) Sidste pause før deep sleep ──────────────────────────────
+      # Sikrer at SPI-bufferen er tom og eventuelle log-meddelelser
+      # er sendt ud ad USB/UART før MCU'en slukker.
+      - delay: 2s
+
       - if:
           condition:
-            binary_sensor.is_on: maintenance_mode
+            lambda: 'return id(maintenance_active);'
           then:
             - logger.log: "Maintenance mode aktiv – deep sleep forhindret (OTA klar)"
           else:
+            - lambda: |-
+                // GPIO0 (BOOT) and GPIO3 (maintenance/wake) both wake from deep sleep.
+                // Using ext1 with a bitmask since ESP32-S3 doesn't support ext0.
+                // ANY_LOW: either pin going LOW wakes the device.
+                uint64_t mask = (1ULL << GPIO_NUM_0) | (1ULL << GPIO_NUM_3);
+                esp_sleep_enable_ext1_wakeup(mask, ESP_EXT1_WAKEUP_ANY_LOW);
             - deep_sleep.enter: deep_sleep_control
 
 # ---------- Maintenance mode pin (GPIO3, active LOW – sæt til GND for at forhindre deep sleep) ----------
+# BEMÆRK: Denne binary_sensor EJER GPIO3's konfiguration. on_boot-lambdaen
+# læser kun pinnen, konfigurerer den ikke (bevidst, så vi ikke får race
+# mellem manuel config og ESPHome's egen init).
 binary_sensor:
   - platform: gpio
     pin:
       number: ${pin_maintenance}
       mode: INPUT_PULLUP
       inverted: true
+      # GPIO3 er en strapping pin på ESP32-S3. Vi bruger den bevidst
+      # (HIGH default via pullup = normal boot; trækkes LOW manuelt for
+      # maintenance mode). Underdryk den informative warning.
+      ignore_strapping_warning: true
     id: maintenance_mode
     name: "Maintenance Mode"
     internal: true
 
-# ---------- LDO2 enable (GPIO39 → 3V3_SW → display VCC) ----------
-output:
-  - platform: gpio
-    pin: ${pin_ldo2}
-    id: ldo2_enable
+  # BEMÆRK: Vi bruger IKKE en separat binary_sensor til BUSY-pinnen (GPIO4).
+  # Waveshare_epaper-driveren ejer pinnen eksklusivt, og pin-validatoren
+  # afviser at dele den. I stedet venter update_and_sleep-scriptet via en
+  # fast delay der er lang nok til en fuld panel-refresh (~6s for 4.20in).
 
 # ---------- Battery -------------------------------------------------------
 sensor:
@@ -215,13 +457,30 @@ sensor:
     pin: ${pin_battery}
     id: battery_voltage
     name: "Battery Voltage"
-    update_interval: 30s
+    # Manuelt trigget af scriptet (read_adc_to). battery_percent beregnes
+    # ud fra battery_v_1 (rested OCV efter deep sleep) i publish_battery_percent_from_avg.
+    update_interval: never
     attenuation: 12db
-    samples: 16                 # Oversampling: 16 hardware readings averaged per update (mitigates ADC jitter + WiFi sag)
+    # FIX (bug 2a): Reduceret fra 32 til 8. 32 samples kunne tage >500ms
+    # med WiFi-stakken aktiv, hvilket overskred delay'en og gav NaN.
+    # 8 samples er rigeligt til en stabil batterimåling.
+    samples: 8
     filters:
-      - multiply: 1.4545        # External 100kΩ/220kΩ divider compensation: (100+220)/220 = 1.4545
+      - multiply: 2.0  # GPIO2 har en 1:2 spændingsdeler på FeatherS3
+      # ── ADC-kalibrering ──────────────────────────────────────────────
+      # Erstat parrene med dine egne målinger:
+      #   <ESP-rapporteret V (efter multiply)> -> <multimeter V på battery-terminaler>
+      # Mindst 2 punkter (ét nær 4.2V, ét nær 3.3V). Flere punkter = least-squares fit.
+      # Default herunder er identitet (ingen korrektion) – ingen effekt før du skifter.
+      - calibrate_linear:
+          - 0.000 -> 0.000
+          - 4.200 -> 4.200
     unit_of_measurement: "V"
-    accuracy_decimals: 2
+    accuracy_decimals: 3
+    # FIX (bug 2a): Signalér til read_adc_to-scriptet at en ny måling
+    # er tilgængelig, så vi kan droppe den faste 500ms delay.
+    on_value:
+      - lambda: 'id(adc_sample_ready) = true;'
 
   - platform: template
     id: battery_percent
@@ -229,33 +488,16 @@ sensor:
     unit_of_measurement: "%"
     accuracy_decimals: 0
     icon: "mdi:battery"
-    update_interval: 30s
-    lambda: |-
-      // Non-linear Li-ion discharge LUT (piecewise linear interpolation).
-      // 18650 S-curve breakpoints:
-      //   4.20V=100%  4.10V=90%  4.00V=80%  3.90V=70%  3.80V=60%
-      //   3.70V=50%   3.60V=40%  3.50V=30%  3.40V=20%  3.30V=10%
-      //   3.20V=5%    3.10V=2%   3.00V=0%
-      float v = id(battery_voltage).state;
-      if (isnan(v)) return {};
-      if (v >= 4.20f) return 100.0f;
-      if (v >= 4.10f) return 90.0f + (v - 4.10f) / 0.10f * 10.0f;
-      if (v >= 4.00f) return 80.0f + (v - 4.00f) / 0.10f * 10.0f;
-      if (v >= 3.90f) return 70.0f + (v - 3.90f) / 0.10f * 10.0f;
-      if (v >= 3.80f) return 60.0f + (v - 3.80f) / 0.10f * 10.0f;
-      if (v >= 3.70f) return 50.0f + (v - 3.70f) / 0.10f * 10.0f;
-      if (v >= 3.60f) return 40.0f + (v - 3.60f) / 0.10f * 10.0f;
-      if (v >= 3.50f) return 30.0f + (v - 3.50f) / 0.10f * 10.0f;
-      if (v >= 3.40f) return 20.0f + (v - 3.40f) / 0.10f * 10.0f;
-      if (v >= 3.30f) return 10.0f + (v - 3.30f) / 0.10f * 10.0f;
-      if (v >= 3.20f) return  5.0f + (v - 3.20f) / 0.10f *  5.0f;
-      if (v >= 3.10f) return  2.0f + (v - 3.10f) / 0.10f *  3.0f;
-      if (v >= 3.00f) return  0.0f + (v - 3.00f) / 0.10f *  2.0f;
-      return 0.0f;
+    update_interval: never
 
 # ---------- Text sensors (udfyldes via publish_state() i HTTP on_response-lambdaen) ----------
 # Al formatering og sprogtilpasning sker i HA – se HA_config_epaper.yaml.
 text_sensor:
+  - platform: wifi_info
+    ip_address:
+      id: wifi_ip
+      internal: true
+
   - platform: template
     id: display_date
     internal: true
@@ -369,15 +611,15 @@ font:
   - file: "fonts/Roboto-Bold.ttf"
     id: font_large
     size: 24
-    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆæØøÅå0123456789 .,:;-/°%!?–"
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆæØøÅåéèêàâùû0123456789 .,:;-/°%!?–()"
   - file: "fonts/Roboto-Regular.ttf"
     id: font_medium
     size: 18
-    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆæØøÅå0123456789 .,:;-/°%!•?–()"
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆæØøÅåéèêàâùû0123456789 .,:;-/°%!•?–()"
   - file: "fonts/Roboto-Regular.ttf"
     id: font_small
     size: 14
-    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆæØøÅå0123456789 .,:;-/°%!•?–()"
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆæØøÅåéèêàâùû0123456789 .,:;-/°%!•?–()"
 
 # ---------- SPI ----------
 spi:
@@ -398,10 +640,22 @@ display:
     lambda: |-
       const int W = 400;
       const int H = 300;
-      const int M = 8;  // margin
+      const int M = 8;
 
-      Color BG = COLOR_OFF;  // hvid baggrund
-      Color FG = COLOR_ON;   // sort tekst
+      Color BG = COLOR_OFF;
+      Color FG = COLOR_ON;
+
+      // ── OTA / Maintenance mode skærm ──────────────────
+      if (id(maintenance_active)) {
+        it.fill(BG);
+        it.print(M, 10,  id(font_large),  FG, "VEDLIGEHOLDELSE");
+        it.print(M, 50,  id(font_medium), FG, "OTA MODE AKTIV");
+        std::string ip = id(wifi_ip).state;
+        it.print(M, 90,  id(font_small),  FG, ip.empty() ? "Venter pa WiFi..." : ip.c_str());
+        it.print(M, 115, id(font_small),  FG, "Flash: esphome run --device (IP)");
+        it.rectangle(0, 0, W, H, FG);
+        return;
+      }
 
       it.fill(BG);
 
@@ -442,6 +696,10 @@ display:
       y += 6;
 
       // ── Kalender ──────────────────────────────────────
+      // Reserver plads til footer (alarm + batteri) nederst, så den altid er synlig.
+      const int FOOTER_H = 24;               // footer total højde (linje + tekst)
+      const int CAL_MAX_Y = H - FOOTER_H - 6; // sidste y hvor en kalender-linje må starte
+
       std::string hdr = id(cal_header).state;
       if (!hdr.empty() && hdr != "unavailable")
         it.print(M, y, id(font_medium), FG, hdr.c_str());
@@ -455,7 +713,7 @@ display:
         id(cal_event_9).state,  id(cal_event_10).state,
       };
       int vis = 0;
-      for (int i = 0; i < 10 && y < H - 28; i++) {
+      for (int i = 0; i < 10 && y < CAL_MAX_Y; i++) {
         if (cal_events[i].empty() || cal_events[i] == "unavailable") continue;
         char linje[64];
         snprintf(linje, sizeof(linje), "• %.60s", cal_events[i].c_str());
@@ -466,23 +724,31 @@ display:
       if (vis == 0) {
         std::string no_ev = id(no_events_msg).state;
         it.print(M, y, id(font_small), FG, no_ev.empty() ? "..." : no_ev.c_str());
-        y += 17;
       }
 
-      y += 4;
-      it.line(M, y, W - M, y, FG);
-      y += 6;
+      // ── Footer: alarm (venstre) + batteri % (højre) ──────────
+      // Fast placering nederst så den aldrig klippes af kalender-overløb.
+      int footer_y = H - FOOTER_H + 4;       // giver ~14px til font_small
+      int line_y   = H - FOOTER_H - 2;       // skillelinje lige over footer
+      it.line(M, line_y, W - M, line_y, FG);
 
-      // ── Alarm (left) + Battery % (right) ──────────────
       std::string alarm_s = id(display_alarm).state;
       if (!alarm_s.empty() && alarm_s != "unavailable")
-        it.print(M, y, id(font_small), FG, alarm_s.c_str());
+        it.print(M, footer_y, id(font_small), FG, alarm_s.c_str());
 
-      if (!isnan(id(battery_percent).state)) {
-        char bat_str[12];
-        snprintf(bat_str, sizeof(bat_str), "Bat: %d%%", (int)id(battery_percent).state);
-        it.print(W - M, y, id(font_small), FG, TextAlign::TOP_RIGHT, bat_str);
+      // Vis altid batteri-feltet: "--%" hvis battery_pct_display er NaN
+      // (ingen ADC-aflæsning lykkedes) -- så vi kan skelne layout-fejl
+      // fra maaling-fejl paa skærmen.
+      // FIX (bug 2): Læser direkte fra global i stedet for battery_percent.state
+      // for at undgå race mod publish_state() der kunne give stale NaN.
+      char bat_str[16];
+      float bp_disp = id(battery_pct_display);
+      if (!isnan(bp_disp)) {
+        snprintf(bat_str, sizeof(bat_str), "Bat: %d%%", (int)bp_disp);
+      } else {
+        snprintf(bat_str, sizeof(bat_str), "Bat: --%%");
       }
+      it.print(W - M, footer_y, id(font_small), FG, TextAlign::TOP_RIGHT, bat_str);
 
       // ── Ramme ─────────────────────────────────────────
       it.rectangle(0, 0, W, H, FG);
